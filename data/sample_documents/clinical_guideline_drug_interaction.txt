@@ -1,0 +1,14 @@
+Clinical Guideline Summary: Drug X and Drug Y Interaction (2025 Revision)
+
+Concurrent use of Drug X and Drug Y is not recommended. Clinical studies
+have shown a significant increase in adverse cardiac events when the two
+medications are administered together, particularly in patients over 65
+years of age.
+
+Patients currently prescribed Drug X who require treatment with Drug Y
+should be transitioned to an alternative medication under physician
+supervision. A minimum washout period of 5 days is recommended before
+initiating Drug Y.
+
+This guidance is based on peer-reviewed clinical trial data published in
+2024 and reflects the current standard of care as of this 2025 revision.

@@ -1,0 +1,4 @@
+# Root convenience file — installs backend + AI-layer dependencies.
+# For isolated environments, prefer installing backend/requirements.txt directly
+# inside the backend Docker image.
+-r backend/requirements.txt

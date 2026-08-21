@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1
+
+# ============================================================
+# Stage 1 — builder: install Python dependencies into a venv
+# ============================================================
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY backend/requirements.txt ./backend/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r backend/requirements.txt
+
+# ============================================================
+# Stage 2 — runtime: copy only the venv + source, no build tools
+# ============================================================
+FROM python:3.11-slim AS runtime
+
+# libpq5 (the runtime lib) is needed for psycopg2, but not the full
+# libpq-dev/build-essential toolchain used only to build it — keeping
+# the final image smaller and with a reduced attack surface.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Run as a dedicated non-root user rather than root — standard container
+# hardening practice; a compromised process inside the container then
+# has no more privilege than a normal unprivileged user.
+RUN groupadd --gid 1000 appuser && useradd --uid 1000 --gid appuser --shell /bin/bash --create-home appuser
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+COPY --chown=appuser:appuser backend/ ./backend/
+COPY --chown=appuser:appuser agents/ ./agents/
+COPY --chown=appuser:appuser trust/ ./trust/
+COPY --chown=appuser:appuser retrieval/ ./retrieval/
+COPY --chown=appuser:appuser database/ ./database/
+COPY --chown=appuser:appuser alembic.ini ./alembic.ini
+COPY --chown=appuser:appuser data/ ./data/
+
+# Writable directories the app needs at runtime (model artifacts, FAISS
+# index) — created and owned by appuser before dropping root, since the
+# runtime user can't chown these itself.
+RUN mkdir -p /app/models/trust_classifier /app/models/embeddings_cache \
+    && chown -R appuser:appuser /app/models
+
+USER appuser
+
+EXPOSE 8000
+
+# Docker/Compose can use this to know the container is actually serving
+# traffic, not just that the process started — see docker-compose.yml's
+# `condition: service_healthy` dependency on this service.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:8000/api/v1/health || exit 1
+
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

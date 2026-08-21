@@ -1,0 +1,16 @@
+About GrowEasy
+
+GrowEasy is a customer relationship management (CRM) platform built for
+small and medium-sized businesses. The platform helps sales teams manage
+leads, track deals through a pipeline, and automate follow-up communication.
+
+Founded in 2021, GrowEasy serves over 4,000 business customers across
+retail, professional services, and e-commerce industries. The platform
+integrates with common tools including Gmail, Outlook, Slack, and
+QuickBooks.
+
+GrowEasy's core product tiers are: Starter (up to 3 users), Growth (up to 25
+users), and Enterprise (unlimited users, dedicated account management).
+
+Customer support is available Monday through Friday, 9am-6pm EST, via chat,
+email, and phone for Enterprise-tier customers.

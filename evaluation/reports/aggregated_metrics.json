@@ -1,0 +1,152 @@
+{
+  "metadata": {
+    "run_at": "2026-07-20T18:47:46.519756+00:00",
+    "n_items": 57,
+    "truthfulqa_n": 25,
+    "max_retries": 1
+  },
+  "fever": {
+    "n_items": 20,
+    "system": {
+      "per_class": {
+        "SUPPORTS": {
+          "precision": 0.75,
+          "recall": 0.9,
+          "f1": 0.8182,
+          "support": 10
+        },
+        "REFUTES": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 7
+        },
+        "NOT ENOUGH INFO": {
+          "precision": 0.375,
+          "recall": 1.0,
+          "f1": 0.5455,
+          "support": 3
+        }
+      },
+      "macro_precision": 0.375,
+      "macro_recall": 0.6333,
+      "macro_f1": 0.4545,
+      "accuracy": 0.6
+    },
+    "baseline": {
+      "per_class": {
+        "SUPPORTS": {
+          "precision": 0.5,
+          "recall": 1.0,
+          "f1": 0.6667,
+          "support": 10
+        },
+        "REFUTES": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 7
+        },
+        "NOT ENOUGH INFO": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 3
+        }
+      },
+      "macro_precision": 0.1667,
+      "macro_recall": 0.3333,
+      "macro_f1": 0.2222,
+      "accuracy": 0.5
+    },
+    "system_hallucination_rate": 0.0,
+    "baseline_hallucination_rate": 0.0
+  },
+  "hotpotqa": {
+    "n_items": 12,
+    "system": {
+      "accuracy": 0.0,
+      "precision": 0.0278,
+      "recall": 0.5833,
+      "f1": 0.0523
+    },
+    "baseline": {
+      "accuracy": 0.0,
+      "precision": 0.038,
+      "recall": 1.0,
+      "f1": 0.073
+    },
+    "system_hallucination_rate": 0.0,
+    "baseline_hallucination_rate": 0.0
+  },
+  "truthfulqa": {
+    "n_items": 25,
+    "system": {
+      "accuracy": 0.52
+    },
+    "baseline": {
+      "accuracy": 0.48
+    },
+    "system_hallucination_rate": 0.0,
+    "baseline_hallucination_rate": 0.0
+  },
+  "trust_calibration": {
+    "ece": 0.0866,
+    "brier_score": 0.2728,
+    "bins": [
+      {
+        "bin_range": [
+          0.0,
+          0.2
+        ],
+        "count": 0,
+        "mean_confidence": null,
+        "accuracy": null
+      },
+      {
+        "bin_range": [
+          0.2,
+          0.4
+        ],
+        "count": 16,
+        "mean_confidence": 0.3727,
+        "accuracy": 0.375
+      },
+      {
+        "bin_range": [
+          0.4,
+          0.6
+        ],
+        "count": 24,
+        "mean_confidence": 0.4461,
+        "accuracy": 0.4167
+      },
+      {
+        "bin_range": [
+          0.6,
+          0.8
+        ],
+        "count": 15,
+        "mean_confidence": 0.7711,
+        "accuracy": 0.5333
+      },
+      {
+        "bin_range": [
+          0.8,
+          1.0
+        ],
+        "count": 2,
+        "mean_confidence": 0.8129,
+        "accuracy": 0.5
+      }
+    ]
+  },
+  "overall": {
+    "n_items": 57,
+    "system_accuracy": 0.4386,
+    "baseline_accuracy": 0.386,
+    "system_hallucination_rate": 0.0,
+    "baseline_hallucination_rate": 0.0,
+    "system_abstention_rate": 0.6491
+  }
+}

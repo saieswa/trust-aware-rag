@@ -1,0 +1,75 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Design tokens — see the design plan in the project write-up: an
+  "instrument panel" aesthetic where trust scores read like calibrated
+  gauge readings. Every color used anywhere in the app should trace back
+  to one of these variables (via tailwind.config.ts), never a raw hex
+  value in a component — that's what makes the light/dark toggle correct
+  everywhere at once instead of needing per-component dark: overrides.
+*/
+:root {
+  --bg-void: #f5f7f9;
+  --bg-panel: #ffffff;
+  --bg-raised: #eef1f4;
+  --ink-primary: #10151b;
+  --ink-muted: #57626f;
+  --accent-phosphor: #c97d1f;
+  --signal-green: #1b8f55;
+  --signal-red: #c7373c;
+  --hairline: rgba(16, 21, 27, 0.1);
+}
+
+.dark {
+  --bg-void: #0b0f14;
+  --bg-panel: #121922;
+  --bg-raised: #1a2330;
+  --ink-primary: #e7ecf2;
+  --ink-muted: #8b98a8;
+  --accent-phosphor: #e8a33d;
+  --signal-green: #2fbe79;
+  --signal-red: #e5484d;
+  --hairline: rgba(231, 236, 242, 0.08);
+}
+
+* {
+  border-color: var(--hairline);
+}
+
+body {
+  background-color: var(--bg-void);
+  color: var(--ink-primary);
+}
+
+/* Visible keyboard focus everywhere — never suppressed. */
+:focus-visible {
+  outline: 2px solid var(--accent-phosphor);
+  outline-offset: 2px;
+}
+
+/* Thin, quiet scrollbars that still match the panel theme. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-raised);
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

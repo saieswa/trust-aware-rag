@@ -1,0 +1,57 @@
+# ============================================================
+# Git Ignore — Trust-Aware Multi-Agent RAG
+# ============================================================
+
+# --- Secrets & environment files ---
+.env
+.env.local
+.env.*.local
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+*.cover
+.coverage
+htmlcov/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- ML models & large binary files ---
+models/embeddings_cache/
+models/trust_classifier/
+*.pt
+*.pth
+*.pkl
+*.bin
+*.h5
+
+# --- FAISS index ---
+*.faiss
+*.index
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+
+# --- IDE ---
+.vscode/settings.json
+.idea/
+*.swp
+*.swo

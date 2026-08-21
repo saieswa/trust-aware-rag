@@ -1,0 +1,64 @@
+# Production overrides — layer on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Changes from the default file:
+#   - Postgres/Redis no longer publish ports to the host — only reachable
+#     by other containers on the internal network. The default file
+#     exposes them for local debugging (psql/redis-cli from the host);
+#     production has no reason to accept connections to the database
+#     from outside the Docker network at all.
+#   - `restart: always` instead of `unless-stopped` — production should
+#     recover from a host reboot without a human needing to run
+#     `docker compose up` again.
+#   - Resource limits, so one runaway container can't starve the others
+#     on a shared host.
+#   - Backend log level defaults to INFO with JSON logs (better for log
+#     aggregators than the colored dev-friendly format).
+
+services:
+  postgres:
+    restart: always
+    ports: []
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  redis:
+    restart: always
+    ports: []
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  backend:
+    restart: always
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      LOG_LEVEL: INFO
+      LOG_JSON: "true"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  frontend:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  nginx:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M

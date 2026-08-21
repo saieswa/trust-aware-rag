@@ -1,0 +1,120 @@
+/**
+ * Shared types mirroring the backend's Pydantic schemas
+ * (backend/app/schemas/*.py). Kept in one file since the frontend only
+ * ever consumes these shapes — it doesn't own them, the backend does.
+ */
+
+export type Decision = "answer" | "retrieve_more" | "abstain";
+export type EvidenceLabel = "support" | "contradict" | "neutral";
+export type SynthesisStatus = "approved" | "abstained" | "verification_failed";
+
+export interface FeatureDetail {
+  value: number;
+  weight: number;
+  contribution: number;
+  applied_as?: string | null;
+}
+
+export interface TrustReportResponse {
+  query: string;
+  trust_score: number;
+  decision: Decision;
+  feature_breakdown: Record<string, FeatureDetail>;
+  diagnostics: {
+    evidence_count: number;
+    support_count: number;
+    distinct_source_count: number;
+    contradiction_count: number;
+  };
+  contradictions: Array<{
+    chunk_id_a: string;
+    chunk_id_b: string;
+    explanation: string;
+  }>;
+  contradiction_method: string;
+  labeling_method: string;
+  evidence: ScoredEvidence[];
+}
+
+export interface ScoredEvidence {
+  chunk_id: string;
+  doc_id: string;
+  source_title: string;
+  text: string;
+  label: EvidenceLabel;
+  reasoning: string;
+  score: number;
+  final_rank_score: number;
+  specificity_score: number;
+  source_reliability_score: number;
+  quality_score: number;
+}
+
+export interface TrustDashboardResponse {
+  total_queries: number;
+  average_trust_score: number;
+  decision_counts: Record<Decision, number>;
+  average_contradiction_score: number;
+  average_agreement_score: number;
+  llm_usage_rate: number;
+}
+
+export interface CitationResponse {
+  chunk_id: string;
+  source_title: string;
+  doc_id: string;
+}
+
+export interface SentenceVerdictResponse {
+  sentence: string;
+  verdict: "supported" | "unsupported";
+  suggestion?: string | null;
+}
+
+export interface SynthesisResponse {
+  original_query: string;
+  status: SynthesisStatus;
+  final_answer: string;
+  citations: CitationResponse[];
+  synthesis_method: string;
+  verification_verdict: string;
+  verification_method: string;
+  hallucination_ratio: number;
+  sentence_verdicts: SentenceVerdictResponse[];
+  revision_suggestions: string[];
+  retry_count: number;
+  abstained: boolean;
+  abstain_reason?: string | null;
+}
+
+export interface IndexResponse {
+  documents_indexed: number;
+  chunks_indexed: number;
+  message: string;
+}
+
+export interface RetrievalStatsResponse {
+  indexed_chunks: number;
+  metadata_records: number;
+  index_path: string;
+}
+
+export interface HealthResponse {
+  status: "ok" | "degraded";
+  version: string;
+  environment: string;
+  services: Array<{ name: string; healthy: boolean; detail: string | null }>;
+}
+
+/** A single turn in the chat transcript — the frontend's own shape, not the API's. */
+export interface ChatTurn {
+  id: string;
+  query: string;
+  status: "pending" | "done" | "error";
+  stage?: PipelineStage;
+  result?: SynthesisResponse;
+  trustReport?: TrustReportResponse;
+  errorMessage?: string;
+}
+
+export type PipelineStage = "retrieving" | "critiquing" | "scoring" | "synthesizing" | "verifying" | "done";

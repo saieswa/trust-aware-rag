@@ -1,0 +1,139 @@
+# Default compose file — brings up the full stack for local development
+# and demos. `docker compose up` should work here with zero required
+# flags once `.env` exists (copy from `.env.example`).
+#
+# For a production deployment, layer the production overrides on top:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# See DEPLOYMENT.md for the full guide.
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: trag_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trag_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trag_password}
+      POSTGRES_DB: ${POSTGRES_DB:-trust_aware_rag}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Other services wait for this healthcheck to pass (not just for the
+    # container to start) before starting themselves — see `depends_on`
+    # below. Postgres accepting a TCP connection is not the same as
+    # Postgres being ready to serve queries; pg_isready checks the latter.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trag_user} -d ${POSTGRES_DB:-trust_aware_rag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - trag_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: trag_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - trag_network
+
+  backend:
+    build:
+      context: .
+      dockerfile: deployment/docker/Dockerfile.backend
+    container_name: trag_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Overrides .env's host values so the backend always reaches the
+      # OTHER containers by their Compose service name, regardless of
+      # what a developer has locally set POSTGRES_HOST/REDIS_HOST to for
+      # non-Docker use — Docker's internal DNS resolves these names only
+      # between containers on the same network.
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-trag_user}:${POSTGRES_PASSWORD:-trag_password}@postgres:5432/${POSTGRES_DB:-trust_aware_rag}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./models:/app/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - trag_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../deployment/docker/Dockerfile.frontend
+    container_name: trag_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - trag_network
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: trag_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./deployment/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - trag_network
+
+networks:
+  trag_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
