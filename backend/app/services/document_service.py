@@ -136,14 +136,6 @@ class DocumentService:
             doc = result.scalar_one_or_none()
             if doc:
                 return doc
-
-        # Fallback to most recently indexed document
-        stmt = select(DocumentRecord).order_by(DocumentRecord.indexed_at.desc()).limit(1)
-        result = await db.execute(stmt)
-        latest_doc = result.scalar_one_or_none()
-        if latest_doc:
-            await cache_service.set_active_document_id(latest_doc.doc_id)
-            return latest_doc
         return None
 
     async def set_active_document(self, db: AsyncSession, doc_id: str) -> DocumentRecord:

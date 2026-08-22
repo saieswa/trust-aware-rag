@@ -24,6 +24,24 @@ class SynthesisService:
         cache_service = get_cache_service()
         effective_doc_id = doc_id or await cache_service.get_active_document_id()
 
+        if not effective_doc_id:
+            return SynthesisResponse(
+                original_query=query,
+                doc_id=None,
+                status="abstained",
+                final_answer="I couldn't find enough evidence in the currently selected document to answer this question.",
+                citations=[],
+                synthesis_method="abstained",
+                verification_verdict="approved",
+                verification_method="none",
+                hallucination_ratio=0.0,
+                sentence_verdicts=[],
+                revision_suggestions=[],
+                retry_count=0,
+                abstained=True,
+                abstain_reason="No document selected or indexed.",
+            )
+
         # Check document-scoped cache
         if effective_doc_id:
             cached_data = await cache_service.get_cached("synthesis", effective_doc_id, query)

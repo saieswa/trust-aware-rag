@@ -38,6 +38,25 @@ class TrustService:
         cache_service = get_cache_service()
         effective_doc_id = doc_id or await cache_service.get_active_document_id()
 
+        if not effective_doc_id and evidence is None:
+            return TrustReportResponse(
+                query=query,
+                doc_id=None,
+                trust_score=0.0,
+                decision="abstain",
+                feature_breakdown={},
+                diagnostics={
+                    "evidence_count": 0,
+                    "support_count": 0,
+                    "distinct_source_count": 0,
+                    "contradiction_count": 0,
+                },
+                contradictions=[],
+                contradiction_method="none",
+                labeling_method="none",
+                evidence=[],
+            )
+
         if effective_doc_id and evidence is None:
             cached_data = await cache_service.get_cached("trust", effective_doc_id, query)
             if cached_data:

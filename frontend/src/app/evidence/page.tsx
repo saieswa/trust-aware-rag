@@ -2,8 +2,9 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Search } from "lucide-react";
+import { Search, FileText, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
 import { Skeleton, ErrorAlert } from "@/components/ui/ErrorAlert";
 import { EvidenceCard } from "@/components/evidence/EvidenceCard";
 import { ContradictionPanel } from "@/components/evidence/ContradictionPanel";
@@ -18,18 +19,37 @@ function EvidenceViewerContent() {
   const highlightedChunk = searchParams.get("chunk");
 
   const [activeDoc, setActiveDoc] = useState<DocumentItem | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [report, setReport] = useState<TrustReportResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    api
+      .getActiveDocument()
+      .then((doc) => setActiveDoc(doc))
+      .catch(() => setActiveDoc(null))
+      .finally(() => setInitialLoading(false));
+  }, []);
+
   const runSearch = async (q: string, docId?: string) => {
+    const targetDocId = docId || activeDoc?.doc_id;
     if (!q.trim()) return;
+
+    if (!targetDocId) {
+      setReport(null);
+      setError("No document indexed. Please upload or activate a document in Admin first.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
-      const result = await api.scoreTrust(q, 5, docId || activeDoc?.doc_id);
-      setReport(result);
+      const result = await api.scoreTrust(q, 5, targetDocId);
+      // Filter out any chunk that does not belong to targetDocId
+      const sanitizedEvidence = (result.evidence || []).filter((e) => e.doc_id === targetDocId);
+      setReport({ ...result, evidence: sanitizedEvidence });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't load evidence.");
     } finally {
@@ -39,6 +59,7 @@ function EvidenceViewerContent() {
 
   const handleDocChange = (doc: DocumentItem) => {
     setActiveDoc(doc);
+    setReport(null);
     if (query.trim()) {
       runSearch(query, doc.doc_id);
     }
@@ -53,6 +74,7 @@ function EvidenceViewerContent() {
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
+      {/* Header with Active Document Indicator */}
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="font-mono text-sm font-semibold text-ink-primary">Evidence Viewer</h1>
@@ -63,6 +85,33 @@ function EvidenceViewerContent() {
         <ActiveDocumentBadge activeDocId={activeDoc?.doc_id} onDocChange={handleDocChange} />
       </div>
 
+      {/* Active Document Status Banner */}
+      <div className="mb-6 rounded-lg border border-hairline bg-panel p-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <FileText className="h-5 w-5 text-accent-phosphor shrink-0" />
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-ink-primary">
+                Active document: {activeDoc ? activeDoc.filename : "None"}
+              </span>
+              {activeDoc && <span className="font-mono text-[10px] text-ink-muted">({activeDoc.doc_id})</span>}
+            </div>
+            <div className="flex items-center gap-2 mt-0.5 text-xs">
+              <span className="text-ink-muted">Status:</span>
+              <Badge tone={activeDoc ? "green" : "amber"}>
+                {activeDoc ? "Indexed" : "No document indexed"}
+              </Badge>
+              {activeDoc && (
+                <span className="text-[11px] text-ink-muted font-mono ml-2">
+                  {activeDoc.chunk_count} chunk(s)
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Search Input Form */}
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -73,18 +122,30 @@ function EvidenceViewerContent() {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          disabled={!activeDoc || loading}
           placeholder={
             activeDoc
-              ? `Inspect evidence for question in "${activeDoc.filename}"…`
-              : "Enter a question to inspect its evidence in active document…"
+              ? `Inspect evidence in "${activeDoc.filename}"…`
+              : "No document indexed — select or upload a document in Admin first"
           }
-          className="flex-1 rounded-md border border-hairline bg-raised px-3 py-2 text-sm text-ink-primary placeholder:text-ink-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-phosphor"
+          className="flex-1 rounded-md border border-hairline bg-raised px-3 py-2 text-sm text-ink-primary placeholder:text-ink-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-phosphor disabled:opacity-50"
         />
-        <Button type="submit" disabled={loading || !query.trim()}>
+        <Button type="submit" disabled={!activeDoc || loading || !query.trim()}>
           <Search className="h-4 w-4" />
           Inspect
         </Button>
       </form>
+
+      {/* Empty / No Document Indexed State */}
+      {!initialLoading && !activeDoc && (
+        <div className="rounded-lg border border-hairline bg-panel/40 p-12 text-center">
+          <AlertCircle className="h-8 w-8 text-amber-400 mx-auto mb-2" />
+          <p className="font-mono text-sm font-semibold text-ink-primary">No document indexed</p>
+          <p className="text-xs text-ink-muted mt-1 max-w-sm mx-auto">
+            Please go to the <strong>Admin</strong> page to upload a research paper or activate an existing document.
+          </p>
+        </div>
+      )}
 
       {loading && (
         <div className="flex flex-col gap-3">
@@ -96,7 +157,8 @@ function EvidenceViewerContent() {
 
       {error && <ErrorAlert message={error} onRetry={() => runSearch(query)} />}
 
-      {!loading && !error && report && (
+      {/* Results Display */}
+      {activeDoc && !loading && !error && report && (
         <div className="flex flex-col gap-4">
           <div className="flex items-center justify-between rounded-md border border-hairline bg-panel px-5 py-4">
             <div>
@@ -116,7 +178,7 @@ function EvidenceViewerContent() {
               <div className="rounded-lg border border-hairline bg-panel/50 p-8 text-center">
                 <p className="font-mono text-sm text-ink-primary">Insufficient evidence in the selected document.</p>
                 <p className="text-xs text-ink-muted mt-1">
-                  No verified chunks in &ldquo;{activeDoc?.filename || "the active document"}&rdquo; met the relevance criteria.
+                  No verified chunks in &ldquo;{activeDoc.filename}&rdquo; met the relevance criteria.
                 </p>
               </div>
             )}
@@ -124,9 +186,9 @@ function EvidenceViewerContent() {
         </div>
       )}
 
-      {!loading && !error && !report && (
+      {activeDoc && !loading && !error && !report && (
         <p className="text-sm text-ink-muted text-center py-16">
-          Enter a question above to see exactly what evidence backs it in the selected document.
+          Enter a question above to see exactly what evidence backs it in <strong>{activeDoc.filename}</strong>.
         </p>
       )}
     </div>

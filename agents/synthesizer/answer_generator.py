@@ -35,7 +35,10 @@ def _llm_generate(
 ) -> str:
     llm = get_groq_llm(temperature=0.2, timeout=20)
 
-    evidence_block = "\n\n".join(f"[{c['chunk_id']}] (Page {c.get('page_number', '?')} | {c.get('section', 'General')}):\n{c['text']}" for c in evidence)
+    evidence_block = "\n\n".join(
+        f"[{c['chunk_id']}] (Page {c.get('page_number', '?')} | {c.get('section', 'General')}):\n{c['text']}"
+        for c in evidence
+    )
     revision_block = (
         REVISION_FEEDBACK_TEMPLATE.format(feedback=revision_feedback) if revision_feedback else ""
     )
@@ -59,11 +62,8 @@ def _llm_generate(
 
 
 def _heuristic_generate(evidence: List[Dict[str, Any]], query: str = "") -> str:
-    """
-    Concise extractive fallback: extracts the key statement without dumping raw blobs.
-    """
     if not evidence:
-        return "I could not find sufficient evidence in the selected document."
+        return "I couldn't find enough evidence in the currently selected document to answer this question."
 
     q_lower = query.lower()
 
@@ -112,15 +112,33 @@ def generate_draft_answer(state: SynthesisVerificationState) -> Dict[str, Any]:
     """LangGraph node: reads `verified_evidence`, `abstained`, `doc_id`."""
     if state.get("abstained"):
         return {
-            "draft_answer": ABSTAIN_MESSAGE_TEMPLATE.format(reason=state.get("abstain_reason", "")),
+            "draft_answer": ABSTAIN_MESSAGE_TEMPLATE,
             "citations": [],
             "synthesis_method": "abstained",
         }
 
     evidence = state.get("verified_evidence", [])
-    revision_feedback = state.get("revision_feedback")
     doc_id = state.get("doc_id")
     query = state.get("original_query", "")
+
+    # Enforce strict document ownership
+    if doc_id:
+        valid_evidence = [c for c in evidence if c.get("doc_id") == doc_id]
+        if len(valid_evidence) < len(evidence):
+            logger.error(
+                f"DOCUMENT ISOLATION ERROR: Discarded {len(evidence) - len(valid_evidence)} "
+                f"chunks not belonging to active doc_id={doc_id!r} before answer synthesis."
+            )
+        evidence = valid_evidence
+
+    if not evidence:
+        return {
+            "draft_answer": "I couldn't find enough evidence in the currently selected document to answer this question.",
+            "citations": [],
+            "synthesis_method": "abstained",
+        }
+
+    revision_feedback = state.get("revision_feedback")
 
     try:
         draft_answer = _llm_generate(query, evidence, revision_feedback, doc_id=doc_id)
