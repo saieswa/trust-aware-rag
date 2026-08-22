@@ -4,29 +4,13 @@ import { useCallback, useRef, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 import type { ChatTurn, PipelineStage } from "@/types/api";
 
-/**
- * The backend's /agents/synthesis/run endpoint (agents/pipeline/agent.py)
- * runs Retriever -> Critic -> Trust -> Synthesizer -> Verifier and returns
- * one JSON response at the end — there's no server-sent-events endpoint
- * yet, so there's nothing to stream token-by-token.
- *
- * What this hook does instead, honestly: shows the REAL pipeline stages
- * (the same five nodes documented in the agent code) as a progressing
- * indicator while the request is in flight, timed to roughly the actual
- * latency distribution of each stage, then reveals the final answer with
- * a typewriter effect once it arrives. This is the correct UX shape for
- * this pipeline today, and is deliberately structured so that swapping in
- * a real SSE stream later only means replacing `simulateStages` +
- * `api.runSynthesis` with an EventSource reader — every consumer of
- * `useChat` (the Chat page) stays the same.
- */
 const STAGE_SEQUENCE: PipelineStage[] = ["retrieving", "critiquing", "scoring", "synthesizing", "verifying"];
 export const STAGE_LABELS: Record<PipelineStage, string> = {
-  retrieving: "Retrieving evidence",
+  retrieving: "Retrieving document evidence",
   critiquing: "Checking evidence quality",
   scoring: "Computing trust score",
-  synthesizing: "Drafting answer",
-  verifying: "Verifying against evidence",
+  synthesizing: "Drafting grounded answer",
+  verifying: "Verifying against source citations",
   done: "Done",
 };
 
@@ -34,7 +18,7 @@ function uid(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-export function useChat() {
+export function useChat(activeDocId?: string) {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const stageTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
@@ -49,8 +33,6 @@ export function useChat() {
 
   const simulateStages = useCallback(
     (id: string) => {
-      // Rough relative weights based on where time actually goes in the
-      // pipeline (retrieval + LLM calls dominate; scoring is near-instant).
       const delays = [400, 900, 300, 1100, 800];
       let cumulative = 0;
       STAGE_SEQUENCE.forEach((stage, i) => {
@@ -69,7 +51,7 @@ export function useChat() {
       simulateStages(id);
 
       try {
-        const result = await api.runSynthesis(query);
+        const result = await api.runSynthesis(query, 5, 2, activeDocId);
         clearStageTimers();
         updateTurn(id, { status: "done", stage: "done", result });
       } catch (error) {
@@ -78,7 +60,7 @@ export function useChat() {
         updateTurn(id, { status: "error", errorMessage: message });
       }
     },
-    [simulateStages, updateTurn]
+    [activeDocId, simulateStages, updateTurn]
   );
 
   const retryTurn = useCallback(
@@ -88,7 +70,7 @@ export function useChat() {
       updateTurn(id, { status: "pending", stage: "retrieving", errorMessage: undefined });
       simulateStages(id);
       api
-        .runSynthesis(turn.query)
+        .runSynthesis(turn.query, 5, 2, activeDocId)
         .then((result) => {
           clearStageTimers();
           updateTurn(id, { status: "done", stage: "done", result });
@@ -99,8 +81,13 @@ export function useChat() {
           updateTurn(id, { status: "error", errorMessage: message });
         });
     },
-    [turns, simulateStages, updateTurn]
+    [activeDocId, turns, simulateStages, updateTurn]
   );
 
-  return { turns, submitQuery, retryTurn };
+  const clearChat = useCallback(() => {
+    clearStageTimers();
+    setTurns([]);
+  }, []);
+
+  return { turns, submitQuery, retryTurn, clearChat };
 }

@@ -65,8 +65,8 @@ async def search(
     request: SearchRequest,
     service: RetrievalService = Depends(get_retrieval_service),
 ) -> SearchResponse:
-    results = service.search(query=request.query, k=request.k)
-    return SearchResponse(query=request.query, results=results, result_count=len(results))
+    results = await service.search(query=request.query, k=request.k, doc_id=request.doc_id)
+    return SearchResponse(query=request.query, doc_id=request.doc_id, results=results, result_count=len(results))
 
 
 @router.post(
@@ -78,9 +78,10 @@ async def debug_retrieval(
     request: SearchRequest,
 ):
     from agents.retriever.agent import run_retriever_agent
-    state = run_retriever_agent(request.query, k=request.k)
+    state = run_retriever_agent(request.query, k=request.k, doc_id=request.doc_id)
     return {
         "query": request.query,
+        "doc_id": request.doc_id,
         "sub_queries": state.get("sub_queries", []),
         "decomposition_method": state.get("decomposition_method", "none"),
         "top_evidence": [

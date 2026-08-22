@@ -1,16 +1,12 @@
 """
-Retrieval Service.
-
-Thin layer between the API routes and the retrieval pipeline. Its job is to
-translate pipeline dataclasses into API response schemas and to turn
-pipeline-level problems into our AppError hierarchy, so the route function
-itself stays a few lines long and free of business logic.
+Retrieval Service with Document Scoping and Redis Caching.
 """
 
 from typing import Any, Dict, List, Optional
 
 from app.core.exceptions import ServiceUnavailableError, ValidationError
 from app.schemas.retrieval import RetrievedChunkResponse
+from app.services.cache_service import get_cache_service
 from retrieval.retriever import get_retrieval_pipeline
 
 
@@ -28,13 +24,22 @@ class RetrievalService:
         except Exception as exc:
             raise ServiceUnavailableError(f"Indexing failed: {exc}") from exc
 
-    def search(self, query: str, k: int) -> List[RetrievedChunkResponse]:
+    async def search(self, query: str, k: int, doc_id: Optional[str] = None) -> List[RetrievedChunkResponse]:
+        cache_service = get_cache_service()
+        effective_doc_id = doc_id or await cache_service.get_active_document_id()
+
+        # Check cache
+        if effective_doc_id:
+            cached_data = await cache_service.get_cached("retrieval", effective_doc_id, query)
+            if cached_data:
+                return [RetrievedChunkResponse(**c) for c in cached_data]
+
         try:
-            results = self.pipeline.search(query, k=k)
+            results = self.pipeline.search(query, k=k, doc_id=effective_doc_id)
         except Exception as exc:
             raise ServiceUnavailableError(f"Search failed: {exc}") from exc
 
-        return [
+        chunk_responses = [
             RetrievedChunkResponse(
                 chunk_id=r.chunk_id,
                 doc_id=r.doc_id,
@@ -48,6 +53,16 @@ class RetrievalService:
             )
             for r in results
         ]
+
+        if effective_doc_id:
+            await cache_service.set_cached(
+                "retrieval",
+                effective_doc_id,
+                query,
+                [c.model_dump() for c in chunk_responses],
+            )
+
+        return chunk_responses
 
     def stats(self) -> Dict[str, Any]:
         return self.pipeline.stats

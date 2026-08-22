@@ -131,21 +131,27 @@ _pipeline_graph = build_pipeline_graph()
 
 
 def run_full_pipeline(
-    query: str, trust_report: Dict[str, Any], max_retries: int = DEFAULT_MAX_RETRIES
+    query: str,
+    trust_report: Dict[str, Any],
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    doc_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Public entrypoint: runs Synthesizer -> Verifier, retrying synthesis up
     to `max_retries` times if the Verifier rejects the draft, and returns
-    the full final state (with `final_report` as the field the API layer
-    actually uses).
+    the full final state.
     """
-    logger.info(f"Running Synthesizer+Verifier pipeline for query: {query!r} (max_retries={max_retries})")
+    logger.info(
+        f"[SYNTHESIS] Running Synthesizer+Verifier pipeline for query: {query!r} "
+        f"(doc_id={doc_id!r}, max_retries={max_retries})"
+    )
     initial_state: SynthesisVerificationState = {
         "original_query": query,
         "trust_report": trust_report,
         "max_retries": max_retries,
         "retry_count": 0,
         "revision_feedback": None,
+        "doc_id": doc_id,
     }
     final_state = _pipeline_graph.invoke(initial_state)
     return final_state

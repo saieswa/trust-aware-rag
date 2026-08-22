@@ -1,11 +1,5 @@
 """
-Critic Agent Service.
-
-If the caller already has evidence (e.g. from a prior /agents/retriever/run
-call), we critique it directly. Otherwise, this composes the two agents:
-run the Retriever Agent first to get evidence, then hand it to the Critic
-Agent — this is the same composition the future end-to-end pipeline
-(Synthesizer/Verifier) will use.
+Critic Agent Service with Document Scoping.
 """
 
 from typing import Any, Dict, List, Optional
@@ -16,15 +10,25 @@ from app.schemas.critic_agent import (
     CriticAgentResponse,
     ScoredEvidenceResponse,
 )
+from app.services.cache_service import get_cache_service
 from agents.critic.agent import run_critic_agent
 from agents.retriever.agent import run_retriever_agent
 
 
 class CriticAgentService:
-    def run(self, query: str, k: int, evidence: Optional[List[Dict[str, Any]]]) -> CriticAgentResponse:
+    async def run(
+        self,
+        query: str,
+        k: int,
+        evidence: Optional[List[Dict[str, Any]]],
+        doc_id: Optional[str] = None,
+    ) -> CriticAgentResponse:
+        cache_service = get_cache_service()
+        effective_doc_id = doc_id or await cache_service.get_active_document_id()
+
         try:
             if evidence is None:
-                retriever_state = run_retriever_agent(query, k=k)
+                retriever_state = run_retriever_agent(query, k=k, doc_id=effective_doc_id)
                 evidence = retriever_state.get("top_evidence", [])
             final_state = run_critic_agent(query, evidence)
         except Exception as exc:

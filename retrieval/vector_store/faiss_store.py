@@ -1,22 +1,16 @@
 """
-FAISS Vector Database.
+FAISS Vector Database with native document ID filtering.
 
-Owns the actual similarity-search index. We use `IndexFlatIP` (inner
-product) wrapped in `IndexIDMap2`, which lets us assign our own integer IDs
-to vectors instead of relying on FAISS's implicit insertion-order IDs — that
-matters because the metadata store (metadata_store.py) needs a stable ID to
-map a search result back to its chunk text and source.
-
-Since embeddings are pre-normalized (see embedding_model.py,
-`normalize_embeddings=True`), inner product between two vectors is
-mathematically equivalent to cosine similarity — so IndexFlatIP gives us
-cosine similarity search without any extra normalization step at query time.
+Owns the similarity-search index. Uses `IndexFlatIP` (inner product) wrapped
+in `IndexIDMap2` to assign explicit integer IDs to vectors.
+Supports native in-engine metadata filtering via FAISS IDSelector to guarantee
+document scoping at retrieval time without post-hoc filtering.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 from loguru import logger
@@ -24,8 +18,6 @@ from loguru import logger
 
 class FAISSVectorStore:
     def __init__(self, dimension: int):
-        # Imported here so importing this module doesn't require faiss to be
-        # installed unless a store is actually created.
         import faiss
 
         self._faiss = faiss
@@ -45,22 +37,36 @@ class FAISSVectorStore:
         self.index.add_with_ids(vectors.astype("float32"), id_array)
         logger.info(f"Added {len(ids)} vector(s) to FAISS index (total now: {self.index.ntotal}).")
 
-    def search(self, query_vector: np.ndarray, k: int = 5) -> Tuple[List[int], List[float]]:
+    def search(
+        self,
+        query_vector: np.ndarray,
+        k: int = 5,
+        allowed_ids: Optional[List[int]] = None,
+    ) -> Tuple[List[int], List[float]]:
         """
         Search for the k nearest vectors to a single query vector.
-
-        Returns (ids, scores) — ids are the same integer IDs passed into
-        `add()`, and scores are cosine similarities in [-1, 1] (in practice
-        close to [0, 1] for normalized text embeddings).
+        If allowed_ids is provided, FAISS restricts the search exclusively to those IDs.
         """
         if self.index.ntotal == 0:
             return [], []
 
-        query = query_vector.reshape(1, -1).astype("float32")
-        k = min(k, self.index.ntotal)  # can't return more results than exist
-        scores, ids = self.index.search(query, k)
+        if allowed_ids is not None:
+            if not allowed_ids:
+                return [], []
+            id_array = np.array(allowed_ids, dtype="int64")
+            sel = self._faiss.IDSelectorArray(id_array)
+            params = self._faiss.SearchParameters(sel=sel)
+        else:
+            params = None
 
-        # FAISS pads with -1 if fewer than k results exist; filter those out.
+        query = query_vector.reshape(1, -1).astype("float32")
+        k_search = min(k, len(allowed_ids) if allowed_ids is not None else self.index.ntotal)
+
+        if params is not None:
+            scores, ids = self.index.search(query, k_search, params=params)
+        else:
+            scores, ids = self.index.search(query, k_search)
+
         result_ids = [int(i) for i in ids[0] if i != -1]
         result_scores = [float(s) for i, s in zip(ids[0], scores[0]) if i != -1]
         return result_ids, result_scores
@@ -75,7 +81,7 @@ class FAISSVectorStore:
     def load(cls, path: str | Path, dimension: int) -> "FAISSVectorStore":
         import faiss
 
-        store = cls.__new__(cls)  # bypass __init__ to avoid creating a fresh empty index
+        store = cls.__new__(cls)
         store._faiss = faiss
         store.dimension = dimension
         store.index = faiss.read_index(str(path))

@@ -1,5 +1,11 @@
+/**
+ * Typed API client for the Trust-Aware RAG backend.
+ */
+
 import axios, { AxiosError } from "axios";
 import type {
+  CitationResponse,
+  DocumentItem,
   DocumentListResponse,
   DocumentUploadResponse,
   HealthResponse,
@@ -10,57 +16,48 @@ import type {
   TrustReportResponse,
 } from "@/types/api";
 
-/**
- * Single axios instance for every backend call. Base URL comes from the
- * env var set in next.config.js (NEXT_PUBLIC_API_URL), so the same build
- * works against localhost in dev and the deployed backend in production
- * without a code change.
- */
-const client = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
-  timeout: 60_000, // agent pipelines can take a while — generous timeout
-  headers: { "Content-Type": "application/json" },
-});
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-/**
- * Every backend error follows one shape (see ErrorResponse in
- * backend/app/schemas/common.py): { error_code, message, details }. This
- * normalizes any axios failure — network error, timeout, or a structured
- * backend error — into one predictable Error the UI can display directly.
- */
 export class ApiError extends Error {
-  errorCode: string;
-  details?: unknown;
-
-  constructor(message: string, errorCode = "unknown_error", details?: unknown) {
+  constructor(
+    public status: number,
+    public code: string,
+    message: string,
+    public details?: unknown
+  ) {
     super(message);
-    this.errorCode = errorCode;
-    this.details = details;
+    this.name = "ApiError";
   }
 }
 
+const client = axios.create({
+  baseURL: BASE_URL,
+  headers: { "Content-Type": "application/json" },
+  timeout: 45000,
+});
+
 function normalizeError(error: unknown): ApiError {
   if (axios.isAxiosError(error)) {
-    const axiosError = error as AxiosError<{ error_code?: string; message?: string }>;
-    if (axiosError.response?.data) {
-      const { error_code, message } = axiosError.response.data;
-      return new ApiError(message || axiosError.message, error_code || "http_error", axiosError.response.data);
-    }
-    if (axiosError.code === "ECONNABORTED") {
-      return new ApiError("The request took too long to respond. Please try again.", "timeout");
-    }
-    return new ApiError(
-      "Couldn't reach the API. Check that the backend is running and reachable.",
-      "network_error"
-    );
+    const status = error.response?.status || 500;
+    const body = error.response?.data as { code?: string; message?: string; detail?: string } | undefined;
+    const code = body?.code || "UPSTREAM_ERROR";
+    const message =
+      body?.message ||
+      (typeof body?.detail === "string" ? body.detail : null) ||
+      error.message ||
+      "Unknown error occurred.";
+    return new ApiError(status, code, message, error.response?.data);
   }
-  return new ApiError("Something unexpected went wrong.", "unknown_error");
+  if (error instanceof Error) {
+    return new ApiError(500, "CLIENT_ERROR", error.message);
+  }
+  return new ApiError(500, "CLIENT_ERROR", "An unexpected error occurred.");
 }
 
 async function request<T>(fn: () => Promise<{ data: T }>): Promise<T> {
   try {
-    const response = await fn();
-    return response.data;
+    const res = await fn();
+    return res.data;
   } catch (error) {
     throw normalizeError(error);
   }
@@ -70,16 +67,16 @@ export const api = {
   health: (): Promise<HealthResponse> => request(() => client.get("/api/v1/health")),
 
   /** Runs the full Retriever -> Critic -> Trust chain for a raw question. */
-  scoreTrust: (query: string, k = 5): Promise<TrustReportResponse> =>
-    request(() => client.post("/api/v1/trust/score", { query, k })),
+  scoreTrust: (query: string, k = 5, docId?: string): Promise<TrustReportResponse> =>
+    request(() => client.post("/api/v1/trust/score", { query, k, doc_id: docId || undefined })),
 
   /** Runs the full pipeline including Synthesizer + Verifier — what the Chat page calls. */
-  runSynthesis: (query: string, k = 5, maxRetries = 2): Promise<SynthesisResponse> =>
-    request(() => client.post("/api/v1/agents/synthesis/run", { query, k, max_retries: maxRetries })),
+  runSynthesis: (query: string, k = 5, maxRetries = 2, docId?: string): Promise<SynthesisResponse> =>
+    request(() => client.post("/api/v1/agents/synthesis/run", { query, k, max_retries: maxRetries, doc_id: docId || undefined })),
 
   dashboardStats: (): Promise<TrustDashboardResponse> => request(() => client.get("/api/v1/trust/dashboard")),
 
-  indexDocuments: (directory?: string, chunkSize = 500, chunkOverlap = 50): Promise<IndexResponse> =>
+  indexDocuments: (directory?: string, chunkSize = 800, chunkOverlap = 100): Promise<IndexResponse> =>
     request(() =>
       client.post("/api/v1/retrieval/index", {
         directory,
@@ -91,7 +88,7 @@ export const api = {
   retrievalStats: (): Promise<RetrievalStatsResponse> => request(() => client.get("/api/v1/retrieval/stats")),
 
   /** Upload a file (PDF, TXT, DOCX, CSV, JSON, XLSX) into the knowledge base */
-  uploadDocument: (file: File, chunkSize = 500, chunkOverlap = 50): Promise<DocumentUploadResponse> => {
+  uploadDocument: (file: File, chunkSize = 800, chunkOverlap = 100): Promise<DocumentUploadResponse> => {
     const formData = new FormData();
     formData.append("file", file);
     formData.append("chunk_size", chunkSize.toString());
@@ -104,7 +101,7 @@ export const api = {
   },
 
   /** Ingest and index a webpage URL into the knowledge base */
-  ingestUrl: (url: string, chunkSize = 500, chunkOverlap = 50): Promise<DocumentUploadResponse> =>
+  ingestUrl: (url: string, chunkSize = 800, chunkOverlap = 100): Promise<DocumentUploadResponse> =>
     request(() =>
       client.post("/api/v1/documents/url", {
         url,
@@ -112,6 +109,12 @@ export const api = {
         chunk_overlap: chunkOverlap,
       })
     ),
+
+  /** Get the current active document */
+  getActiveDocument: (): Promise<DocumentItem | null> => request(() => client.get("/api/v1/documents/active")),
+
+  /** Set active document */
+  activateDocument: (docId: string): Promise<DocumentItem> => request(() => client.post(`/api/v1/documents/${docId}/activate`)),
 
   /** List all indexed knowledge documents */
   listDocuments: (): Promise<DocumentListResponse> => request(() => client.get("/api/v1/documents")),

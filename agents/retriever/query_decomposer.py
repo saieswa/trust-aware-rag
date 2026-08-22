@@ -1,31 +1,41 @@
 """
-Node 2 — Query Decomposition and Context-Aware Query Expansion.
+Node 2 — Query Decomposition and Document-Aware Query Expansion.
 
-Decomposes and expands user questions into targeted sub-queries. When queries
-refer to 'this paper' or 'the document', it contextualizes them with the
-indexed document titles, enabling dense embedding models to achieve high
-semantic relevance scores.
+Decomposes and expands user questions into targeted sub-queries. When `doc_id`
+is present, it contextualizes queries with the specific document's metadata,
+and handles metadata questions (e.g. title, authors) by targeting early chunks.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from agents.llm_client import get_groq_llm
-from agents.prompts.retriever_prompts import (
-    QUERY_DECOMPOSITION_SYSTEM_PROMPT,
-    QUERY_DECOMPOSITION_USER_TEMPLATE,
-)
 from agents.state.retriever_state import RetrieverState
 from retrieval.retriever import get_retrieval_pipeline
 
 MAX_SUB_QUERIES = 6
 
 INTENT_TEMPLATES = [
+    (
+        re.compile(r"\b(?:what\s+is\s+(?:the\s+)?(?:title|name\s+of\s+this)|title\s+of\s+(?:the|this)\s+(?:paper|document))\b", re.I),
+        [
+            "{title} title document heading page 1",
+            "{title} Abstract Introduction",
+            "{title}",
+        ],
+    ),
+    (
+        re.compile(r"\b(?:who\s+(?:are\s+the\s+authors?|wrote|authored|is\s+the\s+author)|list\s+(?:the\s+)?authors?|authors?\s+of\s+(?:the|this))\b", re.I),
+        [
+            "{title} authors affiliations researchers page 1",
+            "{title} Abstract Introduction authors",
+            "{title}",
+        ],
+    ),
     (
         re.compile(r"\b(?:problem\s+statement|research\s+gap|motivation|challenge|issue|problem)\b", re.I),
         [
@@ -81,6 +91,23 @@ class SubQueryList(BaseModel):
     )
 
 
+def _get_document_title_for_doc_id(doc_id: Optional[str]) -> Optional[str]:
+    """Retrieves human-readable title for a specific document ID."""
+    if not doc_id:
+        return None
+    try:
+        pipeline = get_retrieval_pipeline()
+        for _, rec in pipeline.metadata_store._store.items():
+            if rec.get("doc_id") == doc_id:
+                t = rec.get("source_title") or rec.get("filename")
+                if t:
+                    clean_t = re.sub(r"\.(pdf|txt|docx|csv|json|xlsx)$", "", t, flags=re.I)
+                    return clean_t.replace("-", " ").replace("_", " ").strip()
+        return None
+    except Exception:
+        return None
+
+
 def _get_active_document_titles() -> List[str]:
     """Retrieves human-readable titles of currently indexed documents with PDF priority."""
     try:
@@ -92,8 +119,7 @@ def _get_active_document_titles() -> List[str]:
                 clean_t = re.sub(r"\.(pdf|txt|docx|csv|json|xlsx)$", "", t, flags=re.I)
                 clean_t = clean_t.replace("-", " ").replace("_", " ").strip()
                 if clean_t not in titles:
-                    # Prioritize PDF research papers at the front
-                    if rec.get("file_type") == "pdf" or "paper" in t.lower() or "redeep" in t.lower() or "iclr" in t.lower():
+                    if rec.get("file_type") == "pdf" or "paper" in t.lower() or "redeep" in t.lower():
                         titles.insert(0, clean_t)
                     else:
                         titles.append(clean_t)
@@ -102,12 +128,11 @@ def _get_active_document_titles() -> List[str]:
         return []
 
 
-def _expand_domain_intents(query: str, doc_titles: List[str]) -> List[str]:
+def _expand_domain_intents(query: str, primary_title: str) -> List[str]:
     expanded: List[str] = [query]
-    primary_title = doc_titles[0] if doc_titles else "the document"
 
     paper_ref_pattern = re.compile(r"\b(?:this|the)\s+(?:paper|document|study|article|research)\b", re.I)
-    if paper_ref_pattern.search(query) and doc_titles:
+    if paper_ref_pattern.search(query):
         contextualized_q = paper_ref_pattern.sub(primary_title, query)
         if contextualized_q not in expanded:
             expanded.append(contextualized_q)
@@ -124,10 +149,14 @@ def _expand_domain_intents(query: str, doc_titles: List[str]) -> List[str]:
 
 def decompose_query(state: RetrieverState) -> Dict[str, Any]:
     query = state["original_query"]
-    analysis = state.get("analysis", {})
-    doc_titles = _get_active_document_titles()
+    doc_id = state.get("doc_id")
 
-    sub_queries = _expand_domain_intents(query, doc_titles)
+    primary_title = _get_document_title_for_doc_id(doc_id)
+    if not primary_title:
+        all_titles = _get_active_document_titles()
+        primary_title = all_titles[0] if all_titles else "the document"
+
+    sub_queries = _expand_domain_intents(query, primary_title)
     method = "contextual_domain_expansion"
 
     if query in sub_queries:
@@ -144,5 +173,5 @@ def decompose_query(state: RetrieverState) -> Dict[str, Any]:
         if len(cleaned) == MAX_SUB_QUERIES:
             break
 
-    logger.info(f"Retriever sub-queries ({method}): {cleaned}")
+    logger.info(f"[RETRIEVAL] Sub-queries for doc_id={doc_id!r} ({method}): {cleaned}")
     return {"sub_queries": cleaned or [query], "decomposition_method": method}

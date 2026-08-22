@@ -66,22 +66,14 @@ def compute_trust_report(
     evidence: Optional[List[Dict[str, Any]]] = None,
     critic_report: Optional[Dict[str, Any]] = None,
     method: ScoringMethod = "auto",
+    doc_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Produces the final trust report JSON for a query.
-
-    Three ways to call this, in increasing order of "work already done":
-      - Only `query` given          -> runs Retriever Agent, then Critic Agent.
-      - `evidence` given            -> skips Retriever Agent, runs Critic Agent on it.
-      - `critic_report` given       -> skips both agents, scores trust directly.
-
-    `method` controls which trust SCORER is used ("formula", "ml", or
-    "auto" — see `_score()` above) independently of how the evidence was
-    obtained.
+    Produces the final trust report JSON for a query scoped to doc_id.
     """
     if critic_report is None:
         if evidence is None:
-            retriever_state = run_retriever_agent(query, k=k)
+            retriever_state = run_retriever_agent(query, k=k, doc_id=doc_id)
             evidence = retriever_state.get("top_evidence", [])
         critic_state = run_critic_agent(query, evidence)
         critic_report = critic_state["critic_report"]

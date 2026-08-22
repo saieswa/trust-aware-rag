@@ -1,18 +1,11 @@
 """
 Document Ingestion & Management API Routes.
-
-Exposes endpoints for:
-- Uploading files (PDF, TXT, DOCX, CSV, JSON, XLSX)
-- Ingesting web URLs
-- Listing indexed documents
-- Deleting documents (with clean FAISS vector removal)
-- Reindexing documents
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,12 +26,11 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
     "/upload",
     response_model=DocumentUploadResponse,
     summary="Upload and index a document file",
-    description="Uploads a PDF, TXT, DOCX, CSV, JSON, or XLSX file, chunks it, generates embeddings, stores vectors in FAISS, and persists metadata in Supabase PostgreSQL.",
 )
 async def upload_document(
     file: UploadFile = File(...),
-    chunk_size: int = Form(default=500),
-    chunk_overlap: int = Form(default=50),
+    chunk_size: int = Form(default=800),
+    chunk_overlap: int = Form(default=100),
     db: AsyncSession = Depends(get_db),
     service: DocumentService = Depends(get_document_service),
 ) -> DocumentUploadResponse:
@@ -50,7 +42,7 @@ async def upload_document(
     )
     return DocumentUploadResponse(
         success=True,
-        message=f"Successfully indexed '{doc_record.filename}' ({doc_record.chunk_count} chunks).",
+        message=f"Successfully indexed '{doc_record.filename}' ({doc_record.chunk_count} chunks) and set as active document.",
         document=DocumentResponse.model_validate(doc_record),
     )
 
@@ -59,7 +51,6 @@ async def upload_document(
     "/url",
     response_model=DocumentUploadResponse,
     summary="Fetch and index a webpage URL",
-    description="Fetches a public webpage URL, strips navigation/scripts, chunks the readable text, generates embeddings, stores vectors in FAISS, and persists metadata in Supabase PostgreSQL.",
 )
 async def ingest_url(
     request: URLIngestRequest,
@@ -74,16 +65,44 @@ async def ingest_url(
     )
     return DocumentUploadResponse(
         success=True,
-        message=f"Successfully indexed webpage '{doc_record.filename}' ({doc_record.chunk_count} chunks).",
+        message=f"Successfully indexed webpage '{doc_record.filename}' ({doc_record.chunk_count} chunks) and set as active document.",
         document=DocumentResponse.model_validate(doc_record),
     )
+
+
+@router.get(
+    "/active",
+    response_model=Optional[DocumentResponse],
+    summary="Get current active document",
+)
+async def get_active_document(
+    db: AsyncSession = Depends(get_db),
+    service: DocumentService = Depends(get_document_service),
+) -> Optional[DocumentResponse]:
+    doc = await service.get_active_document(db)
+    if doc:
+        return DocumentResponse.model_validate(doc)
+    return None
+
+
+@router.post(
+    "/{doc_id}/activate",
+    response_model=DocumentResponse,
+    summary="Set active document",
+)
+async def activate_document(
+    doc_id: str,
+    db: AsyncSession = Depends(get_db),
+    service: DocumentService = Depends(get_document_service),
+) -> DocumentResponse:
+    doc = await service.set_active_document(db, doc_id)
+    return DocumentResponse.model_validate(doc)
 
 
 @router.get(
     "",
     response_model=DocumentListResponse,
     summary="List all indexed documents",
-    description="Returns all documents in the knowledge base along with status, chunk counts, and timestamps.",
 )
 async def list_documents(
     db: AsyncSession = Depends(get_db),
@@ -114,7 +133,6 @@ async def get_document(
 @router.delete(
     "/{document_id}",
     summary="Delete a document and purge its vectors",
-    description="Deletes the document from PostgreSQL and rebuilds the FAISS vector index from remaining documents to prevent orphaned vectors.",
 )
 async def delete_document(
     document_id: uuid.UUID,
@@ -128,7 +146,6 @@ async def delete_document(
 @router.post(
     "/reindex",
     summary="Reindex all knowledge documents",
-    description="Reconstructs FAISS vector embeddings for all documents stored in the database.",
 )
 async def reindex_documents(
     db: AsyncSession = Depends(get_db),

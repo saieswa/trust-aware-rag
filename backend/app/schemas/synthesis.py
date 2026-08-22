@@ -11,6 +11,7 @@ class SynthesisRequest(BaseModel):
     query: str = Field(..., min_length=1, examples=["Is it safe to combine Drug X and Drug Y?"])
     k: int = Field(default=5, ge=1, le=20)
     max_retries: int = Field(default=2, ge=0, le=5)
+    doc_id: Optional[str] = Field(default=None, description="Active document ID to scope retrieval and synthesis.")
     trust_report: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Pre-computed trust report (e.g. from /trust/score). If omitted, runs the full Retriever+Critic+Trust pipeline first.",
@@ -31,6 +32,7 @@ class SentenceVerdictResponse(BaseModel):
 
 class SynthesisResponse(BaseModel):
     original_query: str
+    doc_id: Optional[str] = None
     status: str = Field(..., description="'approved', 'abstained', or 'verification_failed'.")
     final_answer: str
     citations: List[CitationResponse]

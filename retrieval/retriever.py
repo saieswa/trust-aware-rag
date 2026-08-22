@@ -181,13 +181,26 @@ class RetrievalPipeline:
     # Search
     # ---------------------------------------------------------------- #
 
-    def search(self, query: str, k: int = 5) -> List[RetrievedChunk]:
+    def search(self, query: str, k: int = 5, doc_id: Optional[str] = None) -> List[RetrievedChunk]:
         if self.vector_store is None or self.vector_store.count == 0:
             logger.warning("Search called before any documents were indexed.")
             return []
 
+        allowed_ids = None
+        if doc_id:
+            allowed_ids = self.metadata_store.get_faiss_ids_for_doc(doc_id)
+            if not allowed_ids:
+                logger.info(f"[RETRIEVAL] No chunks found for doc_id={doc_id!r}. Returning empty.")
+                return []
+
         query_vector = self.embedder.embed([query])[0]
-        ids, scores = self.vector_store.search(query_vector, k=k)
+        ids, scores = self.vector_store.search(query_vector, k=k, allowed_ids=allowed_ids)
+
+        logger.info(
+            f"[RETRIEVAL] query={query!r} doc_id={doc_id!r} "
+            f"allowed_vectors={len(allowed_ids) if allowed_ids is not None else self.vector_store.count} "
+            f"retrieved={len(ids)}"
+        )
 
         results: List[RetrievedChunk] = []
         for faiss_id, score in zip(ids, scores):

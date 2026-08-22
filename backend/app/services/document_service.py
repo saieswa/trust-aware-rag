@@ -1,8 +1,5 @@
 """
-Document Ingestion and Management Service.
-
-Orchestrates file reading, URL extraction, chunking, FAISS vector indexing,
-and PostgreSQL metadata persistence.
+Document Ingestion and Management Service with Active Document Management.
 """
 
 from __future__ import annotations
@@ -17,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundError, ValidationError, ServiceUnavailableError
+from app.services.cache_service import get_cache_service
 from database.postgres.models.document import DocumentChunkRecord, DocumentRecord
 from retrieval.loaders.document_loader import (
     SUPPORTED_EXTENSIONS,
@@ -39,7 +37,6 @@ class DocumentService:
         chunk_size: int = 500,
         chunk_overlap: int = 50,
     ) -> DocumentRecord:
-        """Processes an uploaded file, extracts text, indexes into FAISS, and persists to Supabase."""
         filename = Path(file.filename or "unknown.txt").name
         ext = Path(filename).suffix.lower()
 
@@ -60,7 +57,6 @@ class DocumentService:
             logger.error(f"Text extraction failed for '{filename}': {exc}")
             raise ValidationError(f"Failed to extract text from '{filename}': {str(exc)}") from exc
 
-        # Index in FAISS & in-memory MetadataStore
         try:
             chunk_count, chunk_details = self.pipeline.index_document(
                 document, chunk_size=chunk_size, chunk_overlap=chunk_overlap
@@ -69,7 +65,6 @@ class DocumentService:
             logger.error(f"FAISS indexing failed for '{filename}': {exc}")
             raise ServiceUnavailableError(f"Vector indexing failed: {str(exc)}") from exc
 
-        # Persist DocumentRecord & DocumentChunkRecords to PostgreSQL (Supabase)
         doc_record = await self._save_to_database(
             db=db,
             doc_id=document.doc_id,
@@ -82,6 +77,11 @@ class DocumentService:
             chunk_details=chunk_details,
         )
 
+        # Set as active document immediately
+        cache_service = get_cache_service()
+        await cache_service.set_active_document_id(doc_record.doc_id)
+        await cache_service.invalidate_document_cache(doc_record.doc_id)
+
         return doc_record
 
     async def ingest_url(
@@ -91,7 +91,6 @@ class DocumentService:
         chunk_size: int = 500,
         chunk_overlap: int = 50,
     ) -> DocumentRecord:
-        """Fetches a webpage, cleans HTML, indexes into FAISS, and persists to Supabase."""
         url = url.strip()
         if not url.startswith("http://") and not url.startswith("https://"):
             raise ValidationError("Invalid URL: must start with http:// or https://")
@@ -99,32 +98,136 @@ class DocumentService:
         try:
             document = load_document_from_url(url)
         except Exception as exc:
-            logger.error(f"Failed to fetch or parse URL '{url}': {exc}")
-            raise ValidationError(f"Could not ingest webpage '{url}': {str(exc)}") from exc
+            logger.error(f"URL extraction failed for '{url}': {exc}")
+            raise ValidationError(f"Failed to fetch content from '{url}': {str(exc)}") from exc
 
-        # Index in FAISS
         try:
             chunk_count, chunk_details = self.pipeline.index_document(
                 document, chunk_size=chunk_size, chunk_overlap=chunk_overlap
             )
         except Exception as exc:
-            logger.error(f"FAISS indexing failed for URL '{url}': {exc}")
+            logger.error(f"FAISS indexing failed for '{url}': {exc}")
             raise ServiceUnavailableError(f"Vector indexing failed: {str(exc)}") from exc
 
-        # Persist to Supabase
         doc_record = await self._save_to_database(
             db=db,
             doc_id=document.doc_id,
-            filename=document.title or url,
+            filename=document.source_title,
             source_type="url",
             source_url=url,
-            file_type="url",
-            file_size=document.metadata.get("size_bytes", len(document.content)),
+            file_type="html",
+            file_size=len(document.text.encode("utf-8")),
             chunk_count=chunk_count,
             chunk_details=chunk_details,
         )
 
+        cache_service = get_cache_service()
+        await cache_service.set_active_document_id(doc_record.doc_id)
+        await cache_service.invalidate_document_cache(doc_record.doc_id)
+
         return doc_record
+
+    async def get_active_document(self, db: AsyncSession) -> Optional[DocumentRecord]:
+        cache_service = get_cache_service()
+        active_doc_id = await cache_service.get_active_document_id()
+        if active_doc_id:
+            stmt = select(DocumentRecord).where(DocumentRecord.doc_id == active_doc_id)
+            result = await db.execute(stmt)
+            doc = result.scalar_one_or_none()
+            if doc:
+                return doc
+
+        # Fallback to most recently indexed document
+        stmt = select(DocumentRecord).order_by(DocumentRecord.indexed_at.desc()).limit(1)
+        result = await db.execute(stmt)
+        latest_doc = result.scalar_one_or_none()
+        if latest_doc:
+            await cache_service.set_active_document_id(latest_doc.doc_id)
+            return latest_doc
+        return None
+
+    async def set_active_document(self, db: AsyncSession, doc_id: str) -> DocumentRecord:
+        stmt = select(DocumentRecord).where(DocumentRecord.doc_id == doc_id)
+        result = await db.execute(stmt)
+        doc = result.scalar_one_or_none()
+        if not doc:
+            raise NotFoundError(f"Document with doc_id '{doc_id}' not found.")
+
+        cache_service = get_cache_service()
+        await cache_service.set_active_document_id(doc_id)
+        return doc
+
+    async def list_documents(self, db: AsyncSession) -> Tuple[List[DocumentRecord], int, int]:
+        stmt = select(DocumentRecord).order_by(DocumentRecord.indexed_at.desc())
+        result = await db.execute(stmt)
+        docs = list(result.scalars().all())
+
+        total_docs = len(docs)
+        total_chunks = sum(d.chunk_count for d in docs)
+        return docs, total_docs, total_chunks
+
+    async def get_document(self, db: AsyncSession, document_id: uuid.UUID) -> DocumentRecord:
+        stmt = select(DocumentRecord).where(DocumentRecord.id == document_id)
+        result = await db.execute(stmt)
+        doc = result.scalar_one_or_none()
+        if not doc:
+            raise NotFoundError(f"Document with ID '{document_id}' not found.")
+        return doc
+
+    async def delete_document(self, db: AsyncSession, document_id: uuid.UUID) -> None:
+        stmt = select(DocumentRecord).where(DocumentRecord.id == document_id)
+        result = await db.execute(stmt)
+        doc = result.scalar_one_or_none()
+        if not doc:
+            raise NotFoundError(f"Document with ID '{document_id}' not found.")
+
+        doc_id_to_delete = doc.doc_id
+
+        await db.delete(doc)
+        await db.commit()
+
+        cache_service = get_cache_service()
+        await cache_service.invalidate_document_cache(doc_id_to_delete)
+
+        await self.reindex_all(db)
+
+    async def reindex_all(self, db: AsyncSession) -> Dict[str, Any]:
+        stmt = select(DocumentChunkRecord).order_by(DocumentChunkRecord.document_id, DocumentChunkRecord.chunk_index)
+        result = await db.execute(stmt)
+        chunks = list(result.scalars().all())
+
+        from retrieval.loaders.document_loader import Document
+        from retrieval.retriever import RetrievalPipeline
+
+        new_pipeline = RetrievalPipeline()
+        docs_by_id: Dict[str, List[DocumentChunkRecord]] = {}
+        for c in chunks:
+            docs_by_id.setdefault(c.doc_id, []).append(c)
+
+        total_chunks = 0
+        for doc_id, doc_chunks in docs_by_id.items():
+            first = doc_chunks[0]
+            doc = Document(
+                doc_id=doc_id,
+                source_title=first.chunk_metadata.get("source_title", "Document"),
+                source_path=first.chunk_metadata.get("source_path", ""),
+                source_url=first.chunk_metadata.get("source_url"),
+                text="\n\n".join(c.chunk_text for c in doc_chunks),
+                metadata={"file_type": first.chunk_metadata.get("file_type", "txt")},
+            )
+            count, _ = new_pipeline.index_document(doc)
+            total_chunks += count
+
+        self.pipeline.vector_store = new_pipeline.vector_store
+        self.pipeline.metadata_store = new_pipeline.metadata_store
+        self.pipeline._save()
+
+        return {
+            "success": True,
+            "message": f"Successfully reindexed {len(docs_by_id)} documents ({total_chunks} chunks).",
+            "total_documents": len(docs_by_id),
+            "total_chunks": total_chunks,
+        }
 
     async def _save_to_database(
         self,
@@ -138,141 +241,60 @@ class DocumentService:
         chunk_count: int,
         chunk_details: List[Dict[str, Any]],
     ) -> DocumentRecord:
-        """Saves or updates document and chunk records in PostgreSQL."""
-        # Find existing DocumentRecord if any
         stmt = select(DocumentRecord).where(DocumentRecord.doc_id == doc_id)
         result = await db.execute(stmt)
-        doc_record = result.scalars().first()
+        existing = result.scalar_one_or_none()
 
-        if doc_record is None:
+        if existing:
+            doc_record = existing
+            doc_record.filename = filename
+            doc_record.source_type = source_type
+            doc_record.source_url = source_url
+            doc_record.file_type = file_type
+            doc_record.file_size = file_size
+            doc_record.chunk_count = chunk_count
+            doc_record.status = "indexed"
+            from sqlalchemy import delete
+            await db.execute(delete(DocumentChunkRecord).where(DocumentChunkRecord.document_id == doc_record.id))
+        else:
             doc_record = DocumentRecord(
                 doc_id=doc_id,
                 filename=filename,
                 source_type=source_type,
                 source_url=source_url,
                 file_type=file_type,
-                status="indexed",
-                chunk_count=chunk_count,
                 file_size=file_size,
+                chunk_count=chunk_count,
+                status="indexed",
             )
             db.add(doc_record)
-            await db.flush()  # assign doc_record.id
-        else:
-            doc_record.filename = filename
-            doc_record.source_type = source_type
-            doc_record.source_url = source_url
-            doc_record.file_type = file_type
-            doc_record.status = "indexed"
-            doc_record.chunk_count = chunk_count
-            doc_record.file_size = file_size
-            doc_record.error_message = None
-            # Delete old chunks
-            await db.execute(
-                select(DocumentChunkRecord).where(DocumentChunkRecord.document_id == doc_record.id)
-            )
             await db.flush()
 
-        # Insert fresh chunks
-        for item in chunk_details:
-            chunk_obj = item["chunk"]
-            chunk_meta = item["metadata"]
-            chunk_record = DocumentChunkRecord(
+        for c in chunk_details:
+            chunk_rec = DocumentChunkRecord(
                 document_id=doc_record.id,
                 doc_id=doc_id,
-                chunk_id=chunk_obj.chunk_id,
-                faiss_id=item["faiss_id"],
-                chunk_index=chunk_obj.chunk_index,
-                page_number=chunk_meta.get("page_number"),
-                chunk_text=chunk_obj.text,
-                chunk_metadata=chunk_meta,
+                chunk_id=c["chunk_id"],
+                faiss_id=c["faiss_id"],
+                chunk_index=c["chunk_index"],
+                page_number=c.get("page_number"),
+                chunk_text=c["text"],
+                chunk_metadata={
+                    "source_title": filename,
+                    "section": c.get("section", "General"),
+                    "page_number": c.get("page_number"),
+                    "file_type": file_type,
+                },
             )
-            db.add(chunk_record)
+            db.add(chunk_rec)
 
         await db.commit()
         await db.refresh(doc_record)
         return doc_record
 
-    async def list_documents(self, db: AsyncSession) -> Tuple[List[DocumentRecord], int, int]:
-        """Lists all registered documents with total document and chunk counts."""
-        stmt = select(DocumentRecord).order_by(DocumentRecord.created_at.desc())
-        res = await db.execute(stmt)
-        docs = list(res.scalars().all())
 
-        total_docs = len(docs)
-        total_chunks = sum(d.chunk_count for d in docs)
-        return docs, total_docs, total_chunks
-
-    async def get_document(self, db: AsyncSession, doc_uuid: uuid.UUID) -> DocumentRecord:
-        stmt = select(DocumentRecord).where(DocumentRecord.id == doc_uuid)
-        res = await db.execute(stmt)
-        doc = res.scalars().first()
-        if not doc:
-            raise NotFoundError(f"Document with ID '{doc_uuid}' not found.")
-        return doc
-
-    async def delete_document(self, db: AsyncSession, doc_uuid: uuid.UUID) -> bool:
-        """Deletes document from Supabase and purges its vectors from FAISS."""
-        doc = await self.get_document(db, doc_uuid)
-        doc_id = doc.doc_id
-
-        # Purge from vector store & metadata store, rebuilding FAISS index cleanly
-        self.pipeline.delete_document(doc_id)
-
-        # Delete from PostgreSQL (cascade removes document_chunks)
-        await db.delete(doc)
-        await db.commit()
-        logger.info(f"Deleted document record {doc_uuid} ({doc_id}) from database.")
-        return True
-
-    async def reindex_all(self, db: AsyncSession) -> Dict[str, Any]:
-        """Re-indexes all stored documents from PostgreSQL into FAISS."""
-        stmt = select(DocumentRecord)
-        res = await db.execute(stmt)
-        docs = list(res.scalars().all())
-
-        if not docs:
-            # Fallback to sample directory if database has no records yet
-            return self.pipeline.index_directory("data/sample_documents")
-
-        # Reset in-memory stores
-        self.pipeline.metadata_store = type(self.pipeline.metadata_store)()
-        self.pipeline.vector_store = type(self.pipeline.vector_store)(dimension=self.pipeline.embedder.dimension)
-
-        total_chunks = 0
-        for doc in docs:
-            # Reconstruct chunks from DocumentChunkRecord rows
-            chunk_stmt = select(DocumentChunkRecord).where(DocumentChunkRecord.document_id == doc.id).order_by(DocumentChunkRecord.chunk_index)
-            c_res = await db.execute(chunk_stmt)
-            chunk_records = list(c_res.scalars().all())
-
-            if not chunk_records:
-                continue
-
-            texts = [c.chunk_text for c in chunk_records]
-            vectors = self.pipeline.embedder.embed(texts)
-            ids = []
-
-            for c_rec in chunk_records:
-                faiss_id = self.pipeline.metadata_store.next_id()
-                ids.append(faiss_id)
-                self.pipeline.metadata_store.add(faiss_id, c_rec.chunk_metadata)
-
-            self.pipeline.vector_store.add(vectors, ids)
-            total_chunks += len(chunk_records)
-
-        self.pipeline._persist()
-        return {
-            "documents_indexed": len(docs),
-            "chunks_indexed": total_chunks,
-            "message": f"Successfully reindexed {len(docs)} document(s) ({total_chunks} chunks).",
-        }
-
-
-_service_singleton: Optional[DocumentService] = None
+_doc_service = DocumentService()
 
 
 def get_document_service() -> DocumentService:
-    global _service_singleton
-    if _service_singleton is None:
-        _service_singleton = DocumentService()
-    return _service_singleton
+    return _doc_service

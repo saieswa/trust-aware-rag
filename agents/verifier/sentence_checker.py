@@ -74,8 +74,13 @@ def _word_overlap(a: set, b: set) -> float:
     return len(a & b) / len(a)
 
 
-def _heuristic_check(sentences: List[str], evidence: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _heuristic_check(
+    sentences: List[str],
+    evidence: List[Dict[str, Any]],
+    target_doc_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     evidence_by_id = {c["chunk_id"]: c["text"] for c in evidence}
+    evidence_doc_by_id = {c["chunk_id"]: c.get("doc_id") for c in evidence}
     evidence_tokens_by_id = {cid: _tokenize(text) for cid, text in evidence_by_id.items()}
 
     verdicts: List[Dict[str, Any]] = []
@@ -93,6 +98,22 @@ def _heuristic_check(sentences: List[str], evidence: List[Dict[str, Any]]) -> Li
                 }
             )
             continue
+
+        # Validate that cited chunks belong to active document
+        if target_doc_id:
+            wrong_doc_ids = [
+                cid for cid in cited_ids
+                if evidence_doc_by_id.get(cid) and evidence_doc_by_id.get(cid) != target_doc_id
+            ]
+            if wrong_doc_ids:
+                verdicts.append(
+                    {
+                        "sentence": sentence,
+                        "verdict": "unsupported",
+                        "suggestion": f"Sentence cites chunks {wrong_doc_ids} from a different document instead of {target_doc_id}.",
+                    }
+                )
+                continue
 
         best_overlap = max(
             (_word_overlap(sentence_tokens, evidence_tokens_by_id.get(cid, set())) for cid in cited_ids),
@@ -117,13 +138,13 @@ def _heuristic_check(sentences: List[str], evidence: List[Dict[str, Any]]) -> Li
 
 
 def check_sentence_support(state: SynthesisVerificationState) -> Dict[str, Any]:
-    """LangGraph node: reads `sentences`, `verified_evidence`; writes
-    `sentence_verdicts`, `hallucination_ratio`, `verification_method`."""
+    """LangGraph node: reads `sentences`, `verified_evidence`, `doc_id`."""
     if state.get("abstained"):
         return {"sentence_verdicts": [], "hallucination_ratio": 0.0, "verification_method": "none"}
 
     sentences = state["sentences"]
     evidence = state["verified_evidence"]
+    target_doc_id = state.get("doc_id")
 
     if not sentences:
         return {"sentence_verdicts": [], "hallucination_ratio": 0.0, "verification_method": "none"}
@@ -135,14 +156,14 @@ def check_sentence_support(state: SynthesisVerificationState) -> Dict[str, Any]:
         method = "llm"
     except Exception as exc:
         logger.warning(f"LLM sentence verification unavailable ({exc}); falling back to heuristic.")
-        verdicts = _heuristic_check(sentences, evidence)
+        verdicts = _heuristic_check(sentences, evidence, target_doc_id=target_doc_id)
         method = "heuristic"
 
     unsupported_count = sum(1 for v in verdicts if v["verdict"] == "unsupported")
     hallucination_ratio = round(unsupported_count / len(verdicts), 4)
 
     logger.info(
-        f"Verifier: {unsupported_count}/{len(verdicts)} sentence(s) unsupported "
+        f"[VERIFICATION] doc_id={target_doc_id!r} {unsupported_count}/{len(verdicts)} sentence(s) unsupported "
         f"(hallucination_ratio={hallucination_ratio}) via {method}."
     )
     return {"sentence_verdicts": verdicts, "hallucination_ratio": hallucination_ratio, "verification_method": method}

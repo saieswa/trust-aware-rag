@@ -41,7 +41,12 @@ async def score_query(
     service: TrustService = Depends(get_trust_service),
 ) -> TrustReportResponse:
     return await service.score_query(
-        db, query=request.query, k=request.k, evidence=request.evidence, method=request.method
+        db,
+        query=request.query,
+        k=request.k,
+        evidence=request.evidence,
+        method=request.method,
+        doc_id=request.doc_id,
     )
 
 

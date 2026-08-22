@@ -20,6 +20,7 @@ class SynthesisVerificationState(TypedDict, total=False):
     original_query: str
     trust_report: Dict[str, Any]  # output of trust/trust_engine.py
     max_retries: int
+    doc_id: Optional[str]  # Scoped active document ID
 
     # ---------- Synthesizer: evidence selection ----------
     verified_evidence: List[Dict[str, Any]]

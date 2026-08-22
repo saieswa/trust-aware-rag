@@ -45,24 +45,28 @@ CASUAL_OR_OUTDATED_MARKERS = (
 )
 
 
+ACRONYM_PATTERN = re.compile(r"\b[A-Z]{2,}\b")
+
+
 def _specificity_score(text: str) -> float:
     """
-    Higher when the text contains concrete, checkable details.
-
-    Rationale: a claim like "refunds within 30 days" is falsifiable and
-    specific; "refunds are usually processed pretty quickly" is vague and
-    harder to verify or rely on. We count numbers and years as cheap,
-    reliable proxies for specificity without needing any NLP model.
+    Higher when the text contains concrete, checkable details (numbers, dates,
+    technical acronyms, capitalized terminology, and defined entities).
     """
     number_count = len(NUMBER_PATTERN.findall(text))
+    acronym_count = len(ACRONYM_PATTERN.findall(text))
     has_year = bool(YEAR_PATTERN.search(text))
-    word_count = max(len(text.split()), 1)
+    words = text.split()
+    word_count = max(len(words), 1)
 
-    # Normalize: numbers-per-100-words, capped, plus a flat bonus for a
-    # dated reference (dates are a strong specificity + recency signal).
-    density = min(number_count / (word_count / 100), 5.0) / 5.0  # 0..1
-    year_bonus = 0.2 if has_year else 0.0
-    return round(min(density * 0.8 + year_bonus, 1.0), 3)
+    # Base score for well-formed complete prose
+    base_score = 0.35 if word_count >= 8 else (word_count / 8.0) * 0.35
+
+    # Density of numeric and technical terminology
+    density = min((number_count * 1.5 + acronym_count) / (word_count / 50.0 + 1.0), 3.0) / 3.0 * 0.45
+    year_bonus = 0.20 if has_year else 0.0
+
+    return round(min(base_score + density + year_bonus, 1.0), 3)
 
 
 def _source_reliability_score(text: str, source_title: str) -> float:

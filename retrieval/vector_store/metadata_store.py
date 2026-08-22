@@ -1,25 +1,15 @@
 """
-Metadata Storage.
+Metadata Storage with document scoping helpers.
 
-FAISS only stores vectors and integer IDs — it has no idea what text or
-source document a vector came from. This module is the missing link: a
-simple JSON-backed key-value store mapping each integer ID to the actual
-`Chunk` data (text, source document, character offsets, etc.), so a search
-result can be turned back into something a human (or the Critic Agent,
-later) can actually read and cite.
-
-For this project's scale (a demo/portfolio-sized document set), a JSON file
-is a perfectly reasonable store. If this needs to scale to millions of
-chunks later, this class's interface (`add`/`get`/`save`/`load`) is exactly
-what you'd re-implement against PostgreSQL instead — nothing else in the
-pipeline would need to change.
+Maps integer vector IDs to Chunk data (text, source document, character offsets,
+section names, and document IDs).
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
@@ -43,6 +33,24 @@ class MetadataStore:
 
     def get_many(self, faiss_ids: list[int]) -> list[Dict[str, Any]]:
         return [self._store[i] for i in faiss_ids if i in self._store]
+
+    def get_faiss_ids_for_doc(self, doc_id: str) -> List[int]:
+        """Returns all integer FAISS IDs belonging strictly to doc_id."""
+        return [
+            fid for fid, record in self._store.items()
+            if record.get("doc_id") == doc_id
+        ]
+
+    def get_distinct_doc_ids(self) -> List[str]:
+        """Returns all unique document IDs present in the store."""
+        seen = set()
+        doc_ids = []
+        for rec in self._store.values():
+            d_id = rec.get("doc_id")
+            if d_id and d_id not in seen:
+                seen.add(d_id)
+                doc_ids.append(d_id)
+        return doc_ids
 
     def __len__(self) -> int:
         return len(self._store)

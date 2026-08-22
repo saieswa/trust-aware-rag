@@ -1,15 +1,8 @@
 """
 Retriever Agent — LangGraph State.
 
-LangGraph passes a single state object through every node in the graph;
-each node reads whatever keys it needs and returns a dict of the keys it's
-adding/updating (LangGraph merges that into the running state — it does
-not require every node to return the whole state).
-
-Defining this as one TypedDict, in one place, means every node function
-below has a single source of truth for what's available at each stage of
-the pipeline, and Section 8's API layer can type-check against exactly the
-same shape.
+LangGraph passes a single state object through every node in the graph.
+Includes `doc_id` to strictly scope search to the currently active document.
 """
 
 from __future__ import annotations
@@ -27,14 +20,15 @@ class SubQueryResult(TypedDict):
 class RetrieverState(TypedDict, total=False):
     # ---------- Input ----------
     original_query: str
-    k: int  # how many top chunks the caller ultimately wants
+    k: int
+    doc_id: Optional[str]  # Scopes retrieval exclusively to this document ID
 
     # ---------- Stage 1: Query Analysis ----------
     analysis: Dict[str, Any]
 
     # ---------- Stage 2: Query Decomposition ----------
     sub_queries: List[str]
-    decomposition_method: str  # "llm" | "heuristic" | "none" — for transparency/debugging
+    decomposition_method: str
 
     # ---------- Stage 3: Multi-query search ----------
     raw_results: List[SubQueryResult]

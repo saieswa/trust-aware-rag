@@ -31,6 +31,7 @@ class IndexResponse(BaseModel):
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, examples=["What is the refund policy for late deliveries?"])
     k: int = Field(default=5, ge=1, le=50, description="Number of top results to return.")
+    doc_id: Optional[str] = Field(default=None, description="Active document ID to scope search.")
 
 
 class RetrievedChunkResponse(BaseModel):
@@ -47,6 +48,7 @@ class RetrievedChunkResponse(BaseModel):
 
 class SearchResponse(BaseModel):
     query: str
+    doc_id: Optional[str] = None
     results: List[RetrievedChunkResponse]
     result_count: int
 

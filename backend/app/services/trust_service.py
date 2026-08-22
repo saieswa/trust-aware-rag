@@ -32,14 +32,36 @@ class TrustService:
         k: int,
         evidence: Optional[List[Dict[str, Any]]],
         method: str = "auto",
+        doc_id: Optional[str] = None,
     ) -> TrustReportResponse:
+        from app.services.cache_service import get_cache_service
+        cache_service = get_cache_service()
+        effective_doc_id = doc_id or await cache_service.get_active_document_id()
+
+        if effective_doc_id and evidence is None:
+            cached_data = await cache_service.get_cached("trust", effective_doc_id, query)
+            if cached_data:
+                return TrustReportResponse(**cached_data)
+
         try:
-            report = compute_trust_report(query=query, k=k, evidence=evidence, method=method)
+            report = compute_trust_report(
+                query=query,
+                k=k,
+                evidence=evidence,
+                method=method,
+                doc_id=effective_doc_id,
+            )
+            report["doc_id"] = effective_doc_id
         except Exception as exc:
             raise ServiceUnavailableError(f"Trust scoring failed: {exc}") from exc
 
         await self._persist(db, report)
-        return TrustReportResponse(**report)
+
+        response = TrustReportResponse(**report)
+        if effective_doc_id and evidence is None:
+            await cache_service.set_cached("trust", effective_doc_id, query, response.model_dump())
+
+        return response
 
     async def _persist(self, db: AsyncSession, report: Dict[str, Any]) -> None:
         """Writes one row per trust score computation. Failures here are

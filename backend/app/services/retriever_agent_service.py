@@ -1,20 +1,22 @@
 """
-Retriever Agent Service.
-
-Same role as retrieval_service.py from the previous step: translates
-between the agent's internal LangGraph state and the API's response schema,
-and converts unexpected failures into our AppError hierarchy.
+Retriever Agent Service with Document Scoping.
 """
+
+from typing import Optional
 
 from app.core.exceptions import ServiceUnavailableError
 from app.schemas.retriever_agent import EvidenceChunkResponse, RetrieverAgentResponse
+from app.services.cache_service import get_cache_service
 from agents.retriever.agent import run_retriever_agent
 
 
 class RetrieverAgentService:
-    def run(self, query: str, k: int) -> RetrieverAgentResponse:
+    async def run(self, query: str, k: int, doc_id: Optional[str] = None) -> RetrieverAgentResponse:
+        cache_service = get_cache_service()
+        effective_doc_id = doc_id or await cache_service.get_active_document_id()
+
         try:
-            final_state = run_retriever_agent(query, k=k)
+            final_state = run_retriever_agent(query, k=k, doc_id=effective_doc_id)
         except Exception as exc:
             raise ServiceUnavailableError(f"Retriever Agent failed: {exc}") from exc
 

@@ -12,6 +12,7 @@ ScoringMethodLiteral = Literal["formula", "ml", "auto"]
 class TrustScoreRequest(BaseModel):
     query: str = Field(..., min_length=1, examples=["Is it safe to combine Drug X and Drug Y?"])
     k: int = Field(default=5, ge=1, le=20)
+    doc_id: Optional[str] = Field(default=None, description="Active document ID to scope retrieval and trust scoring.")
     evidence: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description="Pre-fetched evidence (e.g. from /agents/retriever/run). If omitted, runs the full Retriever + Critic pipeline first.",
@@ -31,6 +32,7 @@ class FeatureDetail(BaseModel):
 
 class TrustReportResponse(BaseModel):
     query: str
+    doc_id: Optional[str] = None
     trust_score: float = Field(..., description="Final trust score, 0.0-1.0.")
     decision: str = Field(..., description="'answer', 'retrieve_more', or 'abstain'.")
     scoring_method: str = Field(..., description="'formula' or 'ml' — whichever actually produced this score.")
