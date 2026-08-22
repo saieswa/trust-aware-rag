@@ -1,139 +1,108 @@
-# Installation Guide
+# Installation & Setup Guide
 
-This guide sets up the project **structure and environment only** — no
-agent logic exists yet at this step, so these instructions get you to a
-point where the empty scaffold runs cleanly end-to-end (frontend loads,
-backend health-checks, databases are reachable).
+This guide walks you through setting up and running **Trust-Aware Multi-Agent RAG** locally.
+
+---
+
+## Architecture Overview
+
+- **Backend API**: FastAPI (Python 3.10+)
+- **Frontend App**: Next.js 14 / React 18 / Tailwind CSS (Node.js 18+)
+- **Multi-Agent Pipeline**: LangGraph (Retriever, Critic, Synthesizer, Verifier)
+- **Vector Store**: FAISS with in-engine document filtering (`IDSelectorArray`)
+- **Database**: Supabase PostgreSQL (managed cloud database)
+- **Cache**: Upstash Redis (managed cloud Redis)
+- **LLM Provider**: Groq Cloud (`llama3-8b-8192`)
+- **Embeddings**: HuggingFace `sentence-transformers/all-MiniLM-L6-v2`
 
 ---
 
 ## Prerequisites
 
-| Tool | Minimum version | Check with |
+| Requirement | Minimum version | Purpose |
 |---|---|---|
-| Docker | 24.x | `docker --version` |
-| Docker Compose | v2 (bundled with Docker Desktop) | `docker compose version` |
-| Node.js | 20.x (only needed for local, non-Docker frontend dev) | `node --version` |
-| Python | 3.11 (only needed for local, non-Docker backend dev) | `python3 --version` |
-| Git | any recent version | `git --version` |
+| Python | 3.10+ | Backend API and Multi-Agent Pipeline |
+| Node.js | 18+ | Next.js Frontend Application |
+| Supabase | Cloud project | PostgreSQL database for metadata and chunks |
+| Upstash | Cloud database | Redis for document-scoped caching |
+| Groq API Key | Cloud account | Fast LLM generation for Agents |
 
 ---
 
-## Option A — Run everything with Docker (recommended)
+## 1. Configure Environment Variables
 
-1. **Clone / enter the project folder**
-   ```bash
-   cd trust-aware-rag
-   ```
-
-2. **Create your environment file**
-   ```bash
-   cp .env.example .env
-   ```
-   Open `.env` and fill in:
-   - `GROQ_API_KEY` — required for LLM calls.
-   - `HUGGINGFACE_API_TOKEN` — optional, only needed for gated HF models.
-   - Leave `POSTGRES_*`, `REDIS_*` as-is for local development.
-
-3. **Build and start all services**
-   ```bash
-   docker compose build
-   docker compose up
-   ```
-
-4. **Verify services are up**
-   - Frontend: http://localhost:3000
-   - Backend docs (FastAPI auto-generated): http://localhost:8000/docs
-   - Nginx (unified entrypoint): http://localhost:80
-   - PostgreSQL: `localhost:5432` (user/password from `.env`)
-   - Redis: `localhost:6379`
-
-5. **Stop everything**
-   ```bash
-   docker compose down
-   ```
-   Add `-v` to also remove database volumes (destructive):
-   ```bash
-   docker compose down -v
-   ```
-
----
-
-## Option B — Run services locally (no Docker), for active development
-
-### Backend
+Create your `.env` file from `.env.example`:
 
 ```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install --upgrade pip
-pip install -r requirements.txt
+cp .env.example .env
 ```
 
-You'll also need PostgreSQL and Redis running locally (or via Docker just
-for those two services):
-```bash
-docker compose up postgres redis
+Edit `.env` with your credentials:
+
+```env
+# Groq LLM
+GROQ_API_KEY=gsk_your_groq_api_key_here
+
+# Supabase PostgreSQL
+DATABASE_URL=postgresql+asyncpg://postgres:YOUR_PASSWORD@db.YOUR_PROJECT_REF.supabase.co:5432/postgres
+
+# Upstash Redis
+REDIS_URL=rediss://default:YOUR_TOKEN@YOUR_ENDPOINT.upstash.io:6379
+
+# Frontend
+NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
-
-Then run the API (once `backend/app/main.py` exists in a later step):
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Frontend will be available at http://localhost:3000 and will call the
-backend at the URL set in `NEXT_PUBLIC_API_URL` (`frontend/.env.local` or
-inherited from the root `.env`).
 
 ---
 
-## Environment variables reference
+## 2. Backend Setup & Run
 
-All variables are documented inline in `.env.example`. Key ones to double-check
-before running anything:
+1. **Create and activate a Python virtual environment**:
+   ```bash
+   python -m venv .venv
+   # Windows:
+   .venv\Scripts\activate
+   # Linux/macOS:
+   source .venv/bin/activate
+   ```
 
-| Variable | Purpose |
-|---|---|
-| `GROQ_API_KEY` | Powers all LLM-driven agents |
-| `EMBEDDING_MODEL_NAME` | HuggingFace model used to embed text for FAISS |
-| `DATABASE_URL` | Full PostgreSQL connection string used by SQLAlchemy |
-| `REDIS_URL` | Redis connection string used for caching |
-| `TRUST_THRESHOLD_HIGH` / `TRUST_THRESHOLD_LOW` | Decision thresholds for the trust score policy |
-| `NEXT_PUBLIC_API_URL` | URL the frontend uses to reach the backend |
+2. **Install Python dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Start the FastAPI backend server**:
+   ```bash
+   uvicorn backend.app.main:app --reload --port 8000
+   ```
+
+4. **Verify Backend Health**:
+   Open http://localhost:8000/api/v1/health in your browser. Both `postgresql` (Supabase) and `redis` (Upstash) should show `healthy: true`.
 
 ---
 
-## Troubleshooting
+## 3. Frontend Setup & Run
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `docker compose build` fails on `faiss-cpu` | Missing build tools in base image | Already handled via `build-essential` in `Dockerfile.backend`; ensure Docker has enough memory (4GB+) |
-| Backend can't reach Postgres | Wrong host in `DATABASE_URL` | Inside Docker, host must be the service name `postgres`, not `localhost` |
-| Frontend shows CORS errors | Backend CORS not yet configured | Expected at this stage — CORS middleware is added when `backend/app/main.py` is implemented |
-| `npm install` errors on lockfile | No `package-lock.json` committed yet | Run `npm install` once locally to generate it, then commit |
+1. **Install Node dependencies**:
+   ```bash
+   cd frontend
+   npm install
+   ```
+
+2. **Start the Next.js development server**:
+   ```bash
+   npm run dev
+   ```
+
+3. **Access the application**:
+   Open http://localhost:3000 in your browser.
 
 ---
 
-## What's NOT included yet
+## 4. Run Automated Tests
 
-This step only creates structure. The following are intentionally empty and
-will be filled in subsequent steps:
-- Agent logic in `agents/*`
-- FastAPI routes in `backend/app/api/routes/*`
-- Trust scoring logic in `trust/*`
-- Retrieval/embedding logic in `retrieval/*`
-- Database models/migrations in `database/postgres/*`
-- Frontend pages/components in `frontend/src/app/*` and `frontend/src/components/*`
+To execute all unit and integration test suites:
 
-Running the Docker stack now will start empty containers/services — that's
-expected and confirms your environment is wired correctly before real logic
-is added.
+```bash
+pytest
+```
