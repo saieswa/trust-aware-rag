@@ -24,7 +24,7 @@ from database.postgres.session import Base
 
 # Import model modules here as they're added, so Alembic's autogenerate can
 # detect them.
-from database.postgres.models import trust_score_log  # noqa: F401,E402
+from database.postgres.models import document, trust_score_log  # noqa: F401,E402
 
 config = context.config
 settings = get_settings()

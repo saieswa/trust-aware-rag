@@ -69,6 +69,37 @@ async def search(
     return SearchResponse(query=request.query, results=results, result_count=len(results))
 
 
+@router.post(
+    "/debug",
+    summary="Debug retrieval pipeline",
+    description="Runs the Retriever Agent directly (query decomposition, multi-search, section reranking) and returns top chunks without LLM synthesis.",
+)
+async def debug_retrieval(
+    request: SearchRequest,
+):
+    from agents.retriever.agent import run_retriever_agent
+    state = run_retriever_agent(request.query, k=request.k)
+    return {
+        "query": request.query,
+        "sub_queries": state.get("sub_queries", []),
+        "decomposition_method": state.get("decomposition_method", "none"),
+        "top_evidence": [
+            {
+                "chunk_id": c.get("chunk_id"),
+                "doc_id": c.get("doc_id"),
+                "section": c.get("section", "General"),
+                "page_number": c.get("page_number"),
+                "score": c.get("final_rank_score", c.get("score", 0.0)),
+                "source_title": c.get("source_title"),
+                "source_path": c.get("source_path"),
+                "text": c.get("text"),
+            }
+            for c in state.get("top_evidence", [])
+        ],
+        "evidence_count": len(state.get("top_evidence", [])),
+    }
+
+
 @router.get(
     "/stats",
     response_model=RetrievalStatsResponse,

@@ -1,5 +1,7 @@
 import axios, { AxiosError } from "axios";
 import type {
+  DocumentListResponse,
+  DocumentUploadResponse,
   HealthResponse,
   IndexResponse,
   RetrievalStatsResponse,
@@ -87,4 +89,38 @@ export const api = {
     ),
 
   retrievalStats: (): Promise<RetrievalStatsResponse> => request(() => client.get("/api/v1/retrieval/stats")),
+
+  /** Upload a file (PDF, TXT, DOCX, CSV, JSON, XLSX) into the knowledge base */
+  uploadDocument: (file: File, chunkSize = 500, chunkOverlap = 50): Promise<DocumentUploadResponse> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("chunk_size", chunkSize.toString());
+    formData.append("chunk_overlap", chunkOverlap.toString());
+    return request(() =>
+      client.post("/api/v1/documents/upload", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+    );
+  },
+
+  /** Ingest and index a webpage URL into the knowledge base */
+  ingestUrl: (url: string, chunkSize = 500, chunkOverlap = 50): Promise<DocumentUploadResponse> =>
+    request(() =>
+      client.post("/api/v1/documents/url", {
+        url,
+        chunk_size: chunkSize,
+        chunk_overlap: chunkOverlap,
+      })
+    ),
+
+  /** List all indexed knowledge documents */
+  listDocuments: (): Promise<DocumentListResponse> => request(() => client.get("/api/v1/documents")),
+
+  /** Delete a document from Supabase and purge its vectors from FAISS */
+  deleteDocument: (documentId: string): Promise<{ success: boolean; message: string }> =>
+    request(() => client.delete(`/api/v1/documents/${documentId}`)),
+
+  /** Reindex all documents in the database */
+  reindexDocuments: (): Promise<{ documents_indexed: number; chunks_indexed: number; message: string }> =>
+    request(() => client.post("/api/v1/documents/reindex")),
 };

@@ -9,12 +9,13 @@ route files never need to know or hard-code their own prefix.
 
 from fastapi import APIRouter
 
-from app.api.routes import agents, health, retrieval, trust
+from app.api.routes import agents, documents, health, retrieval, trust
 
 api_router = APIRouter()
 
 api_router.include_router(health.router)
 api_router.include_router(retrieval.router)
+api_router.include_router(documents.router)
 api_router.include_router(agents.router)
 api_router.include_router(trust.router)
 

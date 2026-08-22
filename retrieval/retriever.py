@@ -1,40 +1,28 @@
 """
 Retrieval Pipeline.
 
-This is the orchestrator: it wires together the document loader, chunker,
-embedder, FAISS vector store, and metadata store into two operations that
-the rest of the app actually calls:
-
-    pipeline.index_directory(path)   -> load, chunk, embed, and store everything
-    pipeline.search(query, k)        -> embed the query, search FAISS, return
-                                         chunk text + metadata + similarity score
-
-Nothing here does any LLM reasoning — this is pure retrieval. The Critic,
-Synthesizer, and Verifier agents (added in later steps) will sit on top of
-`search()`'s output.
+Wires together document loader, section-aware chunker, sentence-transformer
+embedder, FAISS vector store, and metadata store.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 
 from app.core.config import get_settings
-from retrieval.chunking.text_chunker import Chunk, chunk_documents
+from retrieval.chunking.text_chunker import Chunk, chunk_document, chunk_documents
 from retrieval.embeddings.embedding_model import EmbeddingModel, get_embedder
-from retrieval.loaders.document_loader import load_documents_from_directory
+from retrieval.loaders.document_loader import Document, load_documents_from_directory
 from retrieval.vector_store.faiss_store import FAISSVectorStore
 from retrieval.vector_store.metadata_store import MetadataStore
 
 
 @dataclass
 class RetrievedChunk:
-    """One search result: chunk content plus where it came from and how
-    confident the similarity match is."""
-
     chunk_id: str
     doc_id: str
     text: str
@@ -42,6 +30,8 @@ class RetrievedChunk:
     source_title: str
     source_path: str
     chunk_index: int
+    section: str = "General"
+    page_number: Optional[int] = None
 
 
 class RetrievalPipeline:
@@ -58,60 +48,133 @@ class RetrievalPipeline:
         self._try_load_existing_index()
 
     # ---------------------------------------------------------------- #
-    # Indexing
+    # Incremental Indexing
+    # ---------------------------------------------------------------- #
+
+    def index_document(
+        self,
+        document: Document,
+        chunk_size: int = 800,
+        chunk_overlap: int = 100,
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        """Indexes a single document into FAISS with enriched section embeddings."""
+        self.delete_document(document.doc_id, persist=False)
+
+        chunks: List[Chunk] = chunk_document(document, chunk_size, chunk_overlap)
+        if not chunks:
+            logger.warning(f"No chunks produced for document {document.doc_id}")
+            return 0, []
+
+        # Embed enriched contextual text (includes Document Title, Section, and Page Number)
+        texts_to_embed = [c.embed_text for c in chunks]
+        vectors = self.embedder.embed(texts_to_embed)
+
+        if self.vector_store is None:
+            self.vector_store = FAISSVectorStore(dimension=self.embedder.dimension)
+
+        ids = []
+        chunk_details: List[Dict[str, Any]] = []
+
+        for chunk in chunks:
+            faiss_id = self.metadata_store.next_id()
+            ids.append(faiss_id)
+
+            meta_record = {
+                "chunk_id": chunk.chunk_id,
+                "doc_id": chunk.doc_id,
+                "text": chunk.text,
+                "chunk_index": chunk.chunk_index,
+                "section": chunk.section,
+                "page_number": chunk.page_number,
+                "source_title": chunk.metadata.get("source_title", document.title),
+                "source_path": chunk.metadata.get("source_path", document.source_path),
+                "source_type": chunk.metadata.get("source_type", "file"),
+                "source_url": chunk.metadata.get("source_url"),
+                "file_type": chunk.metadata.get("file_type", "txt"),
+                "filename": chunk.metadata.get("filename", document.title),
+            }
+
+            self.metadata_store.add(faiss_id, meta_record)
+            chunk_details.append({"faiss_id": faiss_id, "chunk": chunk, "metadata": meta_record})
+
+        self.vector_store.add(vectors, ids)
+        self._persist()
+
+        logger.info(
+            f"Indexed document {document.doc_id} ('{document.title}') into {len(chunks)} chunk(s). "
+            f"Embed dimension={self.embedder.dimension}, Total index vectors={self.vector_store.count}."
+        )
+        return len(chunks), chunk_details
+
+    # ---------------------------------------------------------------- #
+    # Deletion & Rebuilding
+    # ---------------------------------------------------------------- #
+
+    def delete_document(self, doc_id: str, persist: bool = True) -> int:
+        faiss_ids_to_remove = [
+            fid for fid, record in self.metadata_store._store.items()
+            if record.get("doc_id") == doc_id
+        ]
+
+        if not faiss_ids_to_remove:
+            return 0
+
+        for fid in faiss_ids_to_remove:
+            self.metadata_store._store.pop(fid, None)
+
+        remaining_records = list(self.metadata_store._store.items())
+        self.vector_store = FAISSVectorStore(dimension=self.embedder.dimension)
+
+        if remaining_records:
+            remaining_ids = [fid for fid, _ in remaining_records]
+            # Embed with contextual section headers
+            remaining_texts = []
+            for _, rec in remaining_records:
+                doc_title = rec.get("source_title", "")
+                section = rec.get("section", "")
+                page = rec.get("page_number")
+                prefix = []
+                if doc_title:
+                    prefix.append(f"Document: {doc_title}")
+                if section and section != "General":
+                    prefix.append(f"Section: {section}")
+                if page:
+                    prefix.append(f"Page: {page}")
+                header = f"[{' | '.join(prefix)}]\n" if prefix else ""
+                remaining_texts.append(header + rec.get("text", ""))
+
+            remaining_vectors = self.embedder.embed(remaining_texts)
+            self.vector_store.add(remaining_vectors, remaining_ids)
+
+        if persist:
+            self._persist()
+
+        logger.info(f"Deleted document {doc_id} ({len(faiss_ids_to_remove)} chunks removed).")
+        return len(faiss_ids_to_remove)
+
+    # ---------------------------------------------------------------- #
+    # Directory & Batch Indexing
     # ---------------------------------------------------------------- #
 
     def index_directory(
         self,
         directory: str | Path,
-        chunk_size: int = 500,
-        chunk_overlap: int = 50,
+        chunk_size: int = 800,
+        chunk_overlap: int = 100,
     ) -> Dict[str, Any]:
-        """
-        Full indexing run: load every document in `directory`, chunk it,
-        embed every chunk, and store both the vectors (FAISS) and the
-        metadata (MetadataStore) — then persist both to disk.
-
-        This rebuilds the index from scratch on each call. A future step
-        (once real usage patterns exist) could add incremental
-        add-one-document indexing instead.
-        """
         documents = load_documents_from_directory(directory)
         if not documents:
             return {"documents_indexed": 0, "chunks_indexed": 0, "message": "No documents found."}
 
-        chunks: List[Chunk] = chunk_documents(documents, chunk_size, chunk_overlap)
-        logger.info(f"Chunked {len(documents)} document(s) into {len(chunks)} chunk(s).")
-
-        texts = [c.text for c in chunks]
-        vectors = self.embedder.embed(texts)
-
-        self.vector_store = FAISSVectorStore(dimension=self.embedder.dimension)
-        self.metadata_store = MetadataStore()
-
-        ids = []
-        for chunk in chunks:
-            faiss_id = self.metadata_store.next_id()
-            ids.append(faiss_id)
-            self.metadata_store.add(
-                faiss_id,
-                {
-                    "chunk_id": chunk.chunk_id,
-                    "doc_id": chunk.doc_id,
-                    "text": chunk.text,
-                    "chunk_index": chunk.chunk_index,
-                    "source_title": chunk.metadata.get("source_title", ""),
-                    "source_path": chunk.metadata.get("source_path", ""),
-                },
-            )
-
-        self.vector_store.add(vectors, ids)
-        self._persist()
+        total_chunks = 0
+        for doc in documents:
+            chunks_indexed, _ = self.index_document(doc, chunk_size, chunk_overlap)
+            total_chunks += chunks_indexed
 
         return {
             "documents_indexed": len(documents),
-            "chunks_indexed": len(chunks),
-            "message": "Indexing complete.",
+            "chunks_indexed": total_chunks,
+            "message": f"Successfully indexed {len(documents)} document(s).",
         }
 
     # ---------------------------------------------------------------- #
@@ -119,7 +182,6 @@ class RetrievalPipeline:
     # ---------------------------------------------------------------- #
 
     def search(self, query: str, k: int = 5) -> List[RetrievedChunk]:
-        """Embed the query and return the top-k most similar chunks."""
         if self.vector_store is None or self.vector_store.count == 0:
             logger.warning("Search called before any documents were indexed.")
             return []
@@ -137,10 +199,12 @@ class RetrievalPipeline:
                     chunk_id=meta["chunk_id"],
                     doc_id=meta["doc_id"],
                     text=meta["text"],
-                    score=score,
-                    source_title=meta["source_title"],
-                    source_path=meta["source_path"],
-                    chunk_index=meta["chunk_index"],
+                    score=round(float(score), 4),
+                    source_title=meta.get("source_title", "Unknown Source"),
+                    source_path=meta.get("source_path", meta.get("source_url", "")),
+                    chunk_index=meta.get("chunk_index", 0),
+                    section=meta.get("section", "General"),
+                    page_number=meta.get("page_number"),
                 )
             )
         return results
@@ -155,8 +219,6 @@ class RetrievalPipeline:
         self.metadata_store.save(self.metadata_path)
 
     def _try_load_existing_index(self) -> None:
-        """On startup, load a previously-built index from disk if one exists,
-        so the app doesn't need to re-index on every restart."""
         if self.faiss_index_path.exists() and self.metadata_path.exists():
             try:
                 self.vector_store = FAISSVectorStore.load(
@@ -179,7 +241,6 @@ _pipeline_singleton: RetrievalPipeline | None = None
 
 
 def get_retrieval_pipeline() -> RetrievalPipeline:
-    """Module-level singleton, so the FAISS index is loaded once per process."""
     global _pipeline_singleton
     if _pipeline_singleton is None:
         _pipeline_singleton = RetrievalPipeline()

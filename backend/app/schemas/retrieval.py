@@ -41,6 +41,8 @@ class RetrievedChunkResponse(BaseModel):
     source_title: str
     source_path: str
     chunk_index: int
+    section: Optional[str] = "General"
+    page_number: Optional[int] = None
 
 
 class SearchResponse(BaseModel):

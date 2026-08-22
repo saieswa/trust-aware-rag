@@ -4,8 +4,11 @@
 
 # --- Secrets & environment files ---
 .env
+.env.production
 .env.local
 .env.*.local
+!.env.example
+!.env.production.example
 
 # --- Python ---
 __pycache__/
@@ -24,6 +27,7 @@ build/
 *.cover
 .coverage
 htmlcov/
+*.log
 
 # --- Node / Next.js ---
 node_modules/
@@ -45,13 +49,14 @@ models/trust_classifier/
 # --- FAISS index ---
 *.faiss
 *.index
+*.meta.json
 
 # --- OS files ---
 .DS_Store
 Thumbs.db
 
 # --- IDE ---
-.vscode/settings.json
+.vscode/
 .idea/
 *.swp
 *.swo

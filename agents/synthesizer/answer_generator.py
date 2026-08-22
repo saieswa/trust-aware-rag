@@ -27,7 +27,7 @@ from agents.prompts.synthesizer_prompts import (
 from agents.state.synthesis_state import SynthesisVerificationState
 
 ABSTAIN_MESSAGE_TEMPLATE = (
-    "I don't have reliable enough evidence to answer this confidently. {reason}"
+    "I couldn't find sufficient verified evidence in the indexed document to answer this reliably. {reason}"
 )
 
 

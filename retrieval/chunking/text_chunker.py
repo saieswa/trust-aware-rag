@@ -1,109 +1,54 @@
 """
-Text Chunking.
+Semantic and Section-Aware Text Chunking.
 
-LLMs and embedding models both have limited context windows, and retrieval
-works better on focused passages than entire documents — so every Document
-gets split into smaller overlapping `Chunk`s before embedding.
-
-We use character-based sliding-window chunking here (not token-based).
-It's simpler, has zero extra dependencies, and is predictable — good enough
-for this stage. Swapping in a token-aware chunker (e.g. using the actual
-tokenizer of whatever LLM/embedding model we use) is a drop-in replacement
-later, since everything downstream only depends on the `Chunk` shape.
+Splits documents into coherent, paragraph-aligned passages tagged with
+document title, page number, and detected section headers (Abstract,
+Introduction, Methodology, Experiments, Conclusion, Appendix, etc.).
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from retrieval.loaders.document_loader import Document
+from retrieval.loaders.document_loader import Document, detect_section_header, _clean_page_text
 
-DEFAULT_CHUNK_SIZE = 500      # characters per chunk
-DEFAULT_CHUNK_OVERLAP = 50    # characters shared between consecutive chunks
+DEFAULT_CHUNK_SIZE = 800      # characters per chunk (~120-150 words)
+DEFAULT_CHUNK_OVERLAP = 100   # overlap characters
 
 
 @dataclass
 class Chunk:
-    """One retrievable unit of text, plus everything needed to trace it
-    back to its source document for citation and trust scoring later."""
-
     chunk_id: str
     doc_id: str
     chunk_index: int
     text: str
     start_char: int
     end_char: int
+    section: str = "General"
+    page_number: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def embed_text(self) -> str:
+        """Enriched text representation for semantic vector embedding."""
+        prefix_parts = []
+        if self.metadata.get("source_title"):
+            prefix_parts.append(f"Document: {self.metadata['source_title']}")
+        if self.section and self.section != "General":
+            prefix_parts.append(f"Section: {self.section}")
+        if self.page_number:
+            prefix_parts.append(f"Page: {self.page_number}")
 
-def _snap_forward_to_word_boundary(text: str, pos: int) -> int:
-    """
-    Nudge `pos` forward until it lands at the start of a word (or end of
-    text), so a chunk never begins mid-word.
-
-    This matters specifically for the overlap step-back: `_split_text`
-    computes the next chunk's start as `end - chunk_overlap`, a raw
-    character offset with no awareness of word boundaries — left
-    unadjusted, this reliably lands mid-word whenever the overlap size
-    doesn't happen to fall exactly between two words.
-    """
-    n = len(text)
-    while 0 < pos < n and text[pos - 1].isalnum() and text[pos].isalnum():
-        pos += 1
-    return pos
+        if prefix_parts:
+            return f"[{' | '.join(prefix_parts)}]\n{self.text}"
+        return self.text
 
 
-def _split_text(text: str, chunk_size: int, chunk_overlap: int) -> List[tuple[str, int, int]]:
-    """
-    Core sliding-window logic. Returns a list of (chunk_text, start, end)
-    character-offset tuples.
-
-    We try to break on a sentence or paragraph boundary near the target
-    chunk_size instead of cutting mid-word, so chunks read naturally and
-    a Critic/Verifier agent (added in a later step) doesn't have to reason
-    about a sentence that's been sliced in half.
-    """
-    if chunk_overlap >= chunk_size:
-        raise ValueError("chunk_overlap must be smaller than chunk_size.")
-
-    spans: List[tuple[str, int, int]] = []
-    text_length = len(text)
-    start = 0
-
-    while start < text_length:
-        end = min(start + chunk_size, text_length)
-
-        # If we're not at the very end of the text, try to end the chunk at
-        # a nicer boundary (paragraph, then sentence, then space) within a
-        # small search window, so we don't cut a sentence in half.
-        if end < text_length:
-            search_window = text[start:end]
-            boundary = max(
-                search_window.rfind("\n\n"),
-                search_window.rfind(". "),
-                search_window.rfind("\n"),
-            )
-            # Only use the boundary if it's not too close to the start
-            # (otherwise chunks would become tiny).
-            if boundary > chunk_size * 0.4:
-                end = start + boundary + 1
-
-        chunk_text = text[start:end].strip()
-        if chunk_text:
-            spans.append((chunk_text, start, end))
-
-        if end >= text_length:
-            break
-
-        # Move the window forward, stepping back by chunk_overlap so
-        # consecutive chunks share context — this helps retrieval when
-        # the relevant sentence sits right at a chunk boundary. Snapped
-        # forward to a word boundary so the next chunk never starts
-        # mid-word (e.g. "lternative" instead of "alternative").
-        start = _snap_forward_to_word_boundary(text, end - chunk_overlap)
-
-    return spans
+def _split_into_paragraphs(text: str) -> List[str]:
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    return paras or [text.strip()]
 
 
 def chunk_document(
@@ -111,26 +56,203 @@ def chunk_document(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> List[Chunk]:
-    """Split one Document into a list of Chunks, carrying source metadata forward."""
-    spans = _split_text(document.content, chunk_size, chunk_overlap)
-
     chunks: List[Chunk] = []
-    for index, (text, start, end) in enumerate(spans):
-        chunks.append(
-            Chunk(
-                chunk_id=f"{document.doc_id}_chunk{index}",
-                doc_id=document.doc_id,
-                chunk_index=index,
-                text=text,
-                start_char=start,
-                end_char=end,
-                metadata={
-                    "source_title": document.title,
-                    "source_path": document.source_path,
-                    **document.metadata,
-                },
+    chunk_counter = 0
+    current_section = "Abstract / Overview"
+
+    # Multi-page documents (PDFs)
+    if getattr(document, "pages", None) and len(document.pages) > 0:
+        for page_info in document.pages:
+            p_num = page_info.get("page_number", 1)
+            raw_text = page_info.get("text", "")
+            p_text = _clean_page_text(raw_text)
+            if not p_text.strip():
+                continue
+
+            paragraphs = _split_into_paragraphs(p_text)
+            current_buffer: List[str] = []
+            current_len = 0
+
+            for para in paragraphs:
+                # Detect any section transition in this paragraph
+                for line in para.splitlines():
+                    detected = detect_section_header(line)
+                    if detected:
+                        if current_buffer:
+                            chunk_text = " ".join(current_buffer).strip()
+                            if chunk_text:
+                                chunks.append(
+                                    Chunk(
+                                        chunk_id=f"{document.doc_id}_chunk{chunk_counter}",
+                                        doc_id=document.doc_id,
+                                        chunk_index=chunk_counter,
+                                        text=chunk_text,
+                                        start_char=0,
+                                        end_char=len(chunk_text),
+                                        section=current_section,
+                                        page_number=p_num,
+                                        metadata={
+                                            "source_title": document.title,
+                                            "source_path": document.source_path,
+                                            "section": current_section,
+                                            "page_number": p_num,
+                                            **document.metadata,
+                                        },
+                                    )
+                                )
+                                chunk_counter += 1
+                            current_buffer = []
+                            current_len = 0
+                        current_section = detected
+                        break
+
+                if current_len + len(para) > chunk_size and current_buffer:
+                    chunk_text = " ".join(current_buffer).strip()
+                    if chunk_text:
+                        chunks.append(
+                            Chunk(
+                                chunk_id=f"{document.doc_id}_chunk{chunk_counter}",
+                                doc_id=document.doc_id,
+                                chunk_index=chunk_counter,
+                                text=chunk_text,
+                                start_char=0,
+                                end_char=len(chunk_text),
+                                section=current_section,
+                                page_number=p_num,
+                                metadata={
+                                    "source_title": document.title,
+                                    "source_path": document.source_path,
+                                    "section": current_section,
+                                    "page_number": p_num,
+                                    **document.metadata,
+                                },
+                            )
+                        )
+                        chunk_counter += 1
+                    current_buffer = [para]
+                    current_len = len(para)
+                else:
+                    current_buffer.append(para)
+                    current_len += len(para)
+
+            # Flush end of page
+            if current_buffer:
+                chunk_text = " ".join(current_buffer).strip()
+                if chunk_text:
+                    chunks.append(
+                        Chunk(
+                            chunk_id=f"{document.doc_id}_chunk{chunk_counter}",
+                            doc_id=document.doc_id,
+                            chunk_index=chunk_counter,
+                            text=chunk_text,
+                            start_char=0,
+                            end_char=len(chunk_text),
+                            section=current_section,
+                            page_number=p_num,
+                            metadata={
+                                "source_title": document.title,
+                                "source_path": document.source_path,
+                                "section": current_section,
+                                "page_number": p_num,
+                                **document.metadata,
+                            },
+                        )
+                    )
+                    chunk_counter += 1
+
+        if chunks:
+            return chunks
+
+    # Single-page / Plain text documents
+    cleaned_content = _clean_page_text(document.content)
+    paragraphs = _split_into_paragraphs(cleaned_content)
+    current_buffer = []
+    current_len = 0
+
+    for para in paragraphs:
+        for line in para.splitlines():
+            detected = detect_section_header(line)
+            if detected:
+                if current_buffer:
+                    chunk_text = " ".join(current_buffer).strip()
+                    if chunk_text:
+                        chunks.append(
+                            Chunk(
+                                chunk_id=f"{document.doc_id}_chunk{chunk_counter}",
+                                doc_id=document.doc_id,
+                                chunk_index=chunk_counter,
+                                text=chunk_text,
+                                start_char=0,
+                                end_char=len(chunk_text),
+                                section=current_section,
+                                page_number=None,
+                                metadata={
+                                    "source_title": document.title,
+                                    "source_path": document.source_path,
+                                    "section": current_section,
+                                    "page_number": None,
+                                    **document.metadata,
+                                },
+                            )
+                        )
+                        chunk_counter += 1
+                    current_buffer = []
+                    current_len = 0
+                current_section = detected
+                break
+
+        if current_len + len(para) > chunk_size and current_buffer:
+            chunk_text = " ".join(current_buffer).strip()
+            if chunk_text:
+                chunks.append(
+                    Chunk(
+                        chunk_id=f"{document.doc_id}_chunk{chunk_counter}",
+                        doc_id=document.doc_id,
+                        chunk_index=chunk_counter,
+                        text=chunk_text,
+                        start_char=0,
+                        end_char=len(chunk_text),
+                        section=current_section,
+                        page_number=None,
+                        metadata={
+                            "source_title": document.title,
+                            "source_path": document.source_path,
+                            "section": current_section,
+                            "page_number": None,
+                            **document.metadata,
+                        },
+                    )
+                )
+                chunk_counter += 1
+            current_buffer = [para]
+            current_len = len(para)
+        else:
+            current_buffer.append(para)
+            current_len += len(para)
+
+    if current_buffer:
+        chunk_text = " ".join(current_buffer).strip()
+        if chunk_text:
+            chunks.append(
+                Chunk(
+                    chunk_id=f"{document.doc_id}_chunk{chunk_counter}",
+                    doc_id=document.doc_id,
+                    chunk_index=chunk_counter,
+                    text=chunk_text,
+                    start_char=0,
+                    end_char=len(chunk_text),
+                    section=current_section,
+                    page_number=None,
+                    metadata={
+                        "source_title": document.title,
+                        "source_path": document.source_path,
+                        "section": current_section,
+                        "page_number": None,
+                        **document.metadata,
+                    },
+                )
             )
-        )
+
     return chunks
 
 
@@ -139,7 +261,6 @@ def chunk_documents(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> List[Chunk]:
-    """Chunk a whole batch of documents at once."""
     all_chunks: List[Chunk] = []
     for document in documents:
         all_chunks.extend(chunk_document(document, chunk_size, chunk_overlap))

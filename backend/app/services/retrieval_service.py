@@ -43,6 +43,8 @@ class RetrievalService:
                 source_title=r.source_title,
                 source_path=r.source_path,
                 chunk_index=r.chunk_index,
+                section=getattr(r, "section", "General"),
+                page_number=getattr(r, "page_number", None),
             )
             for r in results
         ]

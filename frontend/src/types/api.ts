@@ -93,6 +93,33 @@ export interface IndexResponse {
   message: string;
 }
 
+export interface DocumentItem {
+  id: string;
+  doc_id: string;
+  filename: string;
+  source_type: "file" | "url" | string;
+  source_url?: string | null;
+  file_type: string;
+  status: "processing" | "indexed" | "failed" | string;
+  chunk_count: number;
+  file_size?: number | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentListResponse {
+  documents: DocumentItem[];
+  total_documents: number;
+  total_chunks: number;
+}
+
+export interface DocumentUploadResponse {
+  success: boolean;
+  message: string;
+  document: DocumentItem;
+}
+
 export interface RetrievalStatsResponse {
   indexed_chunks: number;
   metadata_records: number;

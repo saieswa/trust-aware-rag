@@ -1,20 +1,15 @@
 """
-Node 2 — Query Decomposition.
+Node 2 — Query Decomposition and Context-Aware Query Expansion.
 
-If Node 1 decided the question doesn't need splitting, this is a no-op —
-`sub_queries` becomes a single-item list containing the original query.
-
-If it does need splitting, we ask an LLM (Groq, via LangChain) to produce
-1-3 focused search queries. LLM calls can fail for all sorts of real-world
-reasons — no API key configured, rate limits, network issues — so this is
-wrapped to fall back to a deterministic heuristic splitter instead of
-crashing the whole retrieval pipeline over a single unavailable API call.
-That fallback matters in production: a temporary Groq outage should
-degrade retrieval quality slightly, not take the feature down entirely.
+Decomposes and expands user questions into targeted sub-queries. When queries
+refer to 'this paper' or 'the document', it contextualizes them with the
+indexed document titles, enabling dense embedding models to achieve high
+semantic relevance scores.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
 from loguru import logger
@@ -26,95 +21,128 @@ from agents.prompts.retriever_prompts import (
     QUERY_DECOMPOSITION_USER_TEMPLATE,
 )
 from agents.state.retriever_state import RetrieverState
+from retrieval.retriever import get_retrieval_pipeline
 
-MAX_SUB_QUERIES = 3
+MAX_SUB_QUERIES = 6
 
-# Fallback split markers, used only if the LLM call is unavailable.
-_HEURISTIC_SPLIT_MARKERS = [" and ", " vs ", " versus ", " compared to "]
+INTENT_TEMPLATES = [
+    (
+        re.compile(r"\b(?:problem\s+statement|research\s+gap|motivation|challenge|issue|problem)\b", re.I),
+        [
+            "{title} problem statement research gap motivation challenge",
+            "{title} Abstract Introduction main problem and contribution",
+            "What is the problem statement of {title}?",
+        ],
+    ),
+    (
+        re.compile(r"\b(?:objective|goal|purpose|aim|contribution)\b", re.I),
+        [
+            "{title} main objective goal purpose contribution",
+            "{title} Abstract Introduction proposed framework",
+            "What is the main objective of {title}?",
+        ],
+    ),
+    (
+        re.compile(r"\b(?:method|methodology|approach|framework|architecture|algorithm|technique)\b", re.I),
+        [
+            "{title} method methodology proposed approach architecture algorithm",
+            "{title} model overview empirical study workflow",
+            "What methodology does {title} propose?",
+        ],
+    ),
+    (
+        re.compile(r"\b(?:results?|findings|performance|accuracy|benchmark|comparison|evaluation)\b", re.I),
+        [
+            "{title} experimental results performance evaluation findings",
+            "{title} Table comparison benchmark metrics accuracy",
+            "What are the main results of {title}?",
+        ],
+    ),
+    (
+        re.compile(r"\b(?:limitations?|drawbacks?|weakness|future\s+work)\b", re.I),
+        [
+            "{title} limitations drawbacks weaknesses future work discussion",
+            "What are the limitations of {title}?",
+        ],
+    ),
+    (
+        re.compile(r"\b(?:conclusion|summary|takeaway)\b", re.I),
+        [
+            "{title} conclusion summary concluding remarks findings",
+            "What is the conclusion of {title}?",
+        ],
+    ),
+]
 
 
 class SubQueryList(BaseModel):
-    """Structured output schema the LLM is asked to fill in."""
-
     queries: List[str] = Field(
         description="1 to 3 focused search queries that together cover the original question."
     )
 
 
-def _llm_decompose(query: str) -> List[str]:
-    """
-    ask Groq to decompose the query.
-
-    Raises on any failure (missing API key, network error, malformed
-    response) — the caller (`decompose_query`) is responsible for catching
-    that and falling back to the heuristic splitter.
-    """
-    llm = get_groq_llm(temperature=0, timeout=15)
-    structured_llm = llm.with_structured_output(SubQueryList)
-
-    result = structured_llm.invoke(
-        [
-            ("system", QUERY_DECOMPOSITION_SYSTEM_PROMPT),
-            ("human", QUERY_DECOMPOSITION_USER_TEMPLATE.format(query=query)),
-        ]
-    )
-    return result.queries
-
-
-def _heuristic_decompose(query: str) -> List[str]:
-    """
-    Deterministic fallback: split on common conjunction/comparison phrases.
-
-    This won't be as semantically precise as an LLM, but it's dependency-free,
-    instant, and guarantees the pipeline always produces *something*
-    reasonable even with zero external services available.
-    """
-    lowered = query.lower()
-    for marker in _HEURISTIC_SPLIT_MARKERS:
-        if marker in lowered:
-            parts = [p.strip(" ?.") for p in query.split(marker.strip())]
-            parts = [p for p in parts if len(p.split()) >= 2]  # drop fragments too short to search on
-            if len(parts) >= 2:
-                return parts
-    # No recognizable split point — just search the whole question as-is.
-    return [query]
+def _get_active_document_titles() -> List[str]:
+    """Retrieves human-readable titles of currently indexed documents with PDF priority."""
+    try:
+        pipeline = get_retrieval_pipeline()
+        titles = []
+        for _, rec in pipeline.metadata_store._store.items():
+            t = rec.get("source_title") or rec.get("filename")
+            if t and t not in ("Unknown Source", ""):
+                clean_t = re.sub(r"\.(pdf|txt|docx|csv|json|xlsx)$", "", t, flags=re.I)
+                clean_t = clean_t.replace("-", " ").replace("_", " ").strip()
+                if clean_t not in titles:
+                    # Prioritize PDF research papers at the front
+                    if rec.get("file_type") == "pdf" or "paper" in t.lower() or "redeep" in t.lower() or "iclr" in t.lower():
+                        titles.insert(0, clean_t)
+                    else:
+                        titles.append(clean_t)
+        return titles
+    except Exception:
+        return []
 
 
-def _clean_sub_queries(sub_queries: List[str], original_query: str) -> List[str]:
-    """De-duplicate (case-insensitive), drop empties, cap at MAX_SUB_QUERIES,
-    and guarantee we never return zero queries."""
-    seen = set()
-    cleaned: List[str] = []
-    for q in sub_queries:
-        q = q.strip()
-        key = q.lower()
-        if q and key not in seen:
-            seen.add(key)
-            cleaned.append(q)
-        if len(cleaned) == MAX_SUB_QUERIES:
-            break
-    return cleaned or [original_query]
+def _expand_domain_intents(query: str, doc_titles: List[str]) -> List[str]:
+    expanded: List[str] = [query]
+    primary_title = doc_titles[0] if doc_titles else "the document"
+
+    paper_ref_pattern = re.compile(r"\b(?:this|the)\s+(?:paper|document|study|article|research)\b", re.I)
+    if paper_ref_pattern.search(query) and doc_titles:
+        contextualized_q = paper_ref_pattern.sub(primary_title, query)
+        if contextualized_q not in expanded:
+            expanded.append(contextualized_q)
+
+    for pattern, templates in INTENT_TEMPLATES:
+        if pattern.search(query):
+            for tpl in templates:
+                formatted = tpl.format(title=primary_title)
+                if formatted not in expanded:
+                    expanded.append(formatted)
+
+    return expanded
 
 
 def decompose_query(state: RetrieverState) -> Dict[str, Any]:
-    """LangGraph node: reads `original_query` + `analysis`, writes `sub_queries`
-    and `decomposition_method` (useful for debugging/observability — you can
-    see in logs/response whether a given answer used the LLM or the fallback)."""
     query = state["original_query"]
-    analysis = state["analysis"]
+    analysis = state.get("analysis", {})
+    doc_titles = _get_active_document_titles()
 
-    if not analysis["needs_decomposition"]:
-        logger.info("Decomposition skipped — query analysis judged this a single-topic question.")
-        return {"sub_queries": [query], "decomposition_method": "none"}
+    sub_queries = _expand_domain_intents(query, doc_titles)
+    method = "contextual_domain_expansion"
 
-    try:
-        sub_queries = _llm_decompose(query)
-        method = "llm"
-    except Exception as exc:
-        logger.warning(f"LLM decomposition unavailable ({exc}); falling back to heuristic split.")
-        sub_queries = _heuristic_decompose(query)
-        method = "heuristic"
+    if query in sub_queries:
+        sub_queries.remove(query)
+    sub_queries.insert(0, query)
 
-    sub_queries = _clean_sub_queries(sub_queries, query)
-    logger.info(f"Decomposed query into {len(sub_queries)} sub-quer(y/ies) via {method}: {sub_queries}")
-    return {"sub_queries": sub_queries, "decomposition_method": method}
+    seen = set()
+    cleaned = []
+    for q in sub_queries:
+        k = q.strip().lower()
+        if k and k not in seen:
+            seen.add(k)
+            cleaned.append(q.strip())
+        if len(cleaned) == MAX_SUB_QUERIES:
+            break
+
+    logger.info(f"Retriever sub-queries ({method}): {cleaned}")
+    return {"sub_queries": cleaned or [query], "decomposition_method": method}
