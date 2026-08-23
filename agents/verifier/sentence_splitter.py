@@ -1,10 +1,8 @@
 """
 Verifier Node 1 — Split Into Sentences.
 
-Splitting is done here, once, as its own node — both the LLM path and the
-heuristic fallback in Node 2 operate on the same sentence list, so the
-splitting logic (and any edge cases in it) only has to be gotten right in
-one place.
+Splits draft answers into checkable sentences and bullet claims, filtering
+out markdown structure headings, metadata, and evidence quote blocks.
 """
 
 from __future__ import annotations
@@ -16,27 +14,51 @@ from loguru import logger
 
 from agents.state.synthesis_state import SynthesisVerificationState
 
-# Splits on ". ", "! ", "? " followed by a capital letter or end of string —
-# simple and dependency-free. Citation markers like "[chunk_id]" don't
-# contain sentence-ending punctuation, so they stay attached to their
-# sentence rather than being split off on their own.
 _SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+(?=[A-Z]|$)")
 
 
 def _split_sentences(text: str) -> List[str]:
-    sentences = [s.strip() for s in _SENTENCE_SPLIT_PATTERN.split(text.strip())]
-    return [s for s in sentences if s]
+    raw_lines = text.strip().split("\n")
+    sentences: List[str] = []
+    current_section = ""
+
+    for line in raw_lines:
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+
+        if line_clean.startswith("#"):
+            current_section = line_clean.lower()
+            continue
+
+        # Skip quote blocks or metadata blocks under Evidence, Evidence Used, or Source
+        if any(sec in current_section for sec in ["evidence", "source", "trust"]):
+            continue
+
+        if line_clean.lower().startswith(("source:", "trust score:", "trust:", "evidence:")):
+            continue
+
+        # Handle bullet points
+        if line_clean.startswith(("-", "*", "•")):
+            bullet_text = re.sub(r"^[-*•]\s*", "", line_clean).strip()
+            if bullet_text and len(bullet_text) > 3:
+                sentences.append(bullet_text)
+            continue
+
+        # Normal text paragraph splitting
+        split_pieces = [s.strip() for s in _SENTENCE_SPLIT_PATTERN.split(line_clean) if s.strip()]
+        for piece in split_pieces:
+            if len(piece) > 5:
+                sentences.append(piece)
+
+    return sentences
 
 
 def split_sentences(state: SynthesisVerificationState) -> Dict[str, Any]:
-    """LangGraph node: reads `draft_answer`, writes `sentences`.
-
-    Skipped (returns an empty list) if the Synthesizer already abstained —
-    there's nothing to fact-check in a fixed "I don't have enough evidence"
-    message."""
+    """LangGraph node: reads `draft_answer`, writes `sentences`."""
     if state.get("abstained"):
         return {"sentences": []}
 
     sentences = _split_sentences(state["draft_answer"])
-    logger.info(f"Verifier: split draft answer into {len(sentences)} sentence(s).")
+    logger.info(f"Verifier: split draft answer into {len(sentences)} substantive claim sentence(s).")
     return {"sentences": sentences}

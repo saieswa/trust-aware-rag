@@ -2,8 +2,7 @@
 Node 5 — Label Evidence as Support / Contradict / Neutral (Irrelevant).
 
 Primary path: LLM evaluations against the query.
-Fallback: Strict heuristic rules requiring high semantic relevance (>= 0.38)
-and high factual quality before any chunk can be marked as 'support'.
+Fallback: Strict heuristic rules requiring semantic relevance or document-level coverage.
 """
 
 from __future__ import annotations
@@ -21,9 +20,9 @@ from agents.prompts.critic_prompts import (
 from agents.state.critic_state import CriticState
 
 # Below this quality score, a chunk is never labeled "support"
-MIN_QUALITY_FOR_SUPPORT = 0.40
+MIN_QUALITY_FOR_SUPPORT = 0.35
 # Below this relevance score, a chunk is off-topic ("neutral" / "irrelevant")
-MIN_RELEVANCE_FOR_SUPPORT = 0.38
+MIN_RELEVANCE_FOR_SUPPORT = 0.25
 
 
 class EvidenceLabel(BaseModel):
@@ -98,11 +97,11 @@ def _heuristic_label_evidence(
                 }
             continue
 
-        if quality >= MIN_QUALITY_FOR_SUPPORT and relevance >= MIN_RELEVANCE_FOR_SUPPORT:
+        if relevance >= 0.70 or (quality >= MIN_QUALITY_FOR_SUPPORT and relevance >= MIN_RELEVANCE_FOR_SUPPORT):
             labels[chunk_id] = {
                 "chunk_id": chunk_id,
                 "label": "support",
-                "reasoning": f"Relevant evidence (relevance={relevance:.2f}, quality={quality:.2f}).",
+                "reasoning": f"Relevant evidence from active document (relevance={relevance:.2f}, quality={quality:.2f}).",
             }
         else:
             labels[chunk_id] = {

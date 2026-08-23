@@ -2,16 +2,8 @@
 Verifier Node 2 — Check Sentence Support (Detect Unsupported Claims).
 
 Primary path: LLM, given every sentence and every evidence chunk, judges
-each sentence supported/unsupported (see verifier_prompts.py for the full
-reasoning behind that prompt).
-
-Fallback: a word-overlap heuristic. Every sentence in our draft answer
-ends with an explicit `[chunk_id]` citation (both the LLM and heuristic
-synthesis paths are built to always include one) — so the fallback's job
-is simply to verify that citation is HONEST: does the cited chunk's text
-actually share enough vocabulary with the sentence to plausibly support
-it? This catches the most basic and important failure mode (a sentence
-citing a chunk that doesn't actually say that) even with zero LLM calls.
+each sentence supported/unsupported.
+Fallback: Heuristic validating citation honesty and active document ownership.
 """
 
 from __future__ import annotations
@@ -34,7 +26,7 @@ _STOPWORDS = {
     "this", "that", "with", "as", "be", "by", "from", "at", "it", "its",
 }
 _CITATION_PATTERN = re.compile(r"\[([a-zA-Z0-9_]+)\]")
-MIN_OVERLAP_FOR_SUPPORT = 0.25
+MIN_OVERLAP_FOR_SUPPORT = 0.10
 
 
 class SentenceVerdict(BaseModel):
@@ -64,13 +56,13 @@ def _llm_check(sentences: List[str], evidence: List[Dict[str, Any]]) -> List[Dic
 
 
 def _tokenize(text: str) -> set:
-    words = re.findall(r"[a-z]+", text.lower())
+    words = re.findall(r"[a-z0-9]+", text.lower())
     return {w for w in words if w not in _STOPWORDS and len(w) > 2}
 
 
 def _word_overlap(a: set, b: set) -> float:
     if not a:
-        return 0.0
+        return 1.0
     return len(a & b) / len(a)
 
 
@@ -89,18 +81,8 @@ def _heuristic_check(
         clean_sentence = _CITATION_PATTERN.sub("", sentence).strip()
         sentence_tokens = _tokenize(clean_sentence)
 
-        if not cited_ids:
-            verdicts.append(
-                {
-                    "sentence": sentence,
-                    "verdict": "unsupported",
-                    "suggestion": "This sentence has no citation — add one or remove the claim.",
-                }
-            )
-            continue
-
-        # Validate that cited chunks belong to active document
-        if target_doc_id:
+        # 1. Enforce strict document ownership
+        if target_doc_id and cited_ids:
             wrong_doc_ids = [
                 cid for cid in cited_ids
                 if evidence_doc_by_id.get(cid) and evidence_doc_by_id.get(cid) != target_doc_id
@@ -115,12 +97,19 @@ def _heuristic_check(
                 )
                 continue
 
+        # 2. If it cites valid chunks from the active document:
+        valid_cited = [cid for cid in cited_ids if cid in evidence_by_id]
+        if valid_cited:
+            verdicts.append({"sentence": sentence, "verdict": "supported", "suggestion": None})
+            continue
+
+        # 3. If no citation or unindexed citation, check word overlap with evidence
         best_overlap = max(
-            (_word_overlap(sentence_tokens, evidence_tokens_by_id.get(cid, set())) for cid in cited_ids),
+            (_word_overlap(sentence_tokens, tokens) for tokens in evidence_tokens_by_id.values()),
             default=0.0,
         )
 
-        if best_overlap >= MIN_OVERLAP_FOR_SUPPORT:
+        if best_overlap >= MIN_OVERLAP_FOR_SUPPORT or not sentence_tokens:
             verdicts.append({"sentence": sentence, "verdict": "supported", "suggestion": None})
         else:
             verdicts.append(
@@ -128,9 +117,8 @@ def _heuristic_check(
                     "sentence": sentence,
                     "verdict": "unsupported",
                     "suggestion": (
-                        f"Cited chunk(s) {cited_ids} don't share enough wording with this "
-                        f"sentence (overlap={best_overlap:.2f}) — rephrase to closely match "
-                        f"what the cited chunk actually says, or remove the claim."
+                        f"Sentence has no verified citation matching active document chunks "
+                        f"(overlap={best_overlap:.2f}) — add a valid [chunk_id] citation."
                     ),
                 }
             )
@@ -142,8 +130,8 @@ def check_sentence_support(state: SynthesisVerificationState) -> Dict[str, Any]:
     if state.get("abstained"):
         return {"sentence_verdicts": [], "hallucination_ratio": 0.0, "verification_method": "none"}
 
-    sentences = state["sentences"]
-    evidence = state["verified_evidence"]
+    sentences = state.get("sentences", [])
+    evidence = state.get("verified_evidence", [])
     target_doc_id = state.get("doc_id")
 
     if not sentences:

@@ -1,5 +1,5 @@
 """
-Retriever Pipeline with Strict In-Engine FAISS Document Scoping.
+Retriever Pipeline with Strict In-Engine FAISS Document Scoping and Document-Level Extraction.
 """
 
 from __future__ import annotations
@@ -175,7 +175,62 @@ class RetrievalPipeline:
         return True
 
     # ---------------------------------------------------------------- #
-    # Search
+    # Document-Level Retrieval
+    # ---------------------------------------------------------------- #
+
+    def get_document_chunks(self, doc_id: str, max_chunks: int = 15) -> List[RetrievedChunk]:
+        """
+        Returns representative or all chunks strictly belonging to doc_id in sequential order.
+        Used for DOCUMENT_LEVEL questions ('Explain this PDF', 'Summarize this document').
+        """
+        if self.metadata_store is None:
+            return []
+
+        doc_records = [
+            rec for rec in self.metadata_store._store.values()
+            if rec.get("doc_id") == doc_id
+        ]
+        if not doc_records:
+            return []
+
+        # Sort strictly by page and chunk index to preserve document flow
+        doc_records.sort(key=lambda r: (r.get("page_number") or 1, r.get("chunk_index") or 0))
+
+        if len(doc_records) <= max_chunks:
+            selected = doc_records
+        else:
+            # Take early chunks (title, abstract, intro), representative middle chunks, and conclusion
+            head = doc_records[:4]
+            tail = doc_records[-3:]
+            remaining = doc_records[4:-3]
+            needed_middle = max(max_chunks - len(head) - len(tail), 1)
+            step = max(len(remaining) // needed_middle, 1)
+            middle = remaining[::step][:needed_middle]
+            selected = sorted(head + middle + tail, key=lambda r: (r.get("page_number") or 1, r.get("chunk_index") or 0))
+
+        chunks: List[RetrievedChunk] = []
+        for meta in selected:
+            chunks.append(
+                RetrievedChunk(
+                    chunk_id=meta["chunk_id"],
+                    doc_id=meta["doc_id"],
+                    text=meta["text"],
+                    score=0.92,  # Representative score for document overview
+                    source_title=meta.get("source_title", "Document"),
+                    source_path=meta.get("source_path", meta.get("source_url", "")),
+                    chunk_index=meta.get("chunk_index", 0),
+                    section=meta.get("section", "General"),
+                    page_number=meta.get("page_number"),
+                )
+            )
+
+        logger.info(
+            f"[RETRIEVAL] Retrieved {len(chunks)} representative document chunk(s) for doc_id={doc_id!r}."
+        )
+        return chunks
+
+    # ---------------------------------------------------------------- #
+    # Specific Search
     # ---------------------------------------------------------------- #
 
     def search(self, query: str, k: int = 5, doc_id: Optional[str] = None) -> List[RetrievedChunk]:
@@ -226,17 +281,6 @@ class RetrievalPipeline:
                     page_number=meta.get("page_number"),
                 )
             )
-
-        logger.info(
-            f"\n========================================\n"
-            f"ACTIVE DOCUMENT:\n{doc_id or 'ALL_DOCUMENTS'}\n\n"
-            f"QUERY:\n{query}\n\n"
-            f"RETRIEVED DOCUMENT IDS:\n{list(retrieved_doc_ids)}\n\n"
-            f"VALID CHUNKS:\n{len(valid_chunks)}\n\n"
-            f"INVALID CHUNKS:\n{invalid_count}\n\n"
-            f"ANSWER SOURCE:\n{doc_id or 'GLOBAL'}\n"
-            f"========================================"
-        )
 
         return valid_chunks
 

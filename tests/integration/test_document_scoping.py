@@ -76,7 +76,27 @@ async def test_document_scoping_and_switching():
     assert "clinical guideline" in res_b["final_answer"].lower() or "drug x" in res_b["final_answer"].lower()
 
     # -------------------------------------------------------------
-    # TEST 3: Query Problem Statement on Document B
+    # TEST 3: DOCUMENT-LEVEL Query: "Can you explain this PDF?" on Document A
+    # -------------------------------------------------------------
+    query_doc_level = "Can you explain this PDF?"
+    retriever_state_dl = run_retriever_agent(query_doc_level, k=5, doc_id="doc_paper_a")
+    top_ev_dl = retriever_state_dl.get("top_evidence", [])
+
+    assert len(top_ev_dl) > 0
+    for chunk in top_ev_dl:
+        assert chunk["doc_id"] == "doc_paper_a"
+        assert "drug" not in chunk["text"].lower()
+
+    trust_dl = compute_trust_report(query_doc_level, critic_report=run_critic_agent(query_doc_level, top_ev_dl)["critic_report"], doc_id="doc_paper_a")
+    # Must NOT abstain for document-level questions on an indexed document
+    assert trust_dl["trust_score"] >= 0.50
+    assert trust_dl["decision"] != "abstain"
+
+    res_dl = run_full_pipeline(query_doc_level, trust_dl, doc_id="doc_paper_a")["final_report"]
+    assert "redeep" in res_dl["final_answer"].lower() or "document overview" in res_dl["final_answer"].lower() or "rag" in res_dl["final_answer"].lower()
+
+    # -------------------------------------------------------------
+    # TEST 4: Query Problem Statement on Document B
     # -------------------------------------------------------------
     query_problem = "What is the problem statement?"
     retriever_state_b2 = run_retriever_agent(query_problem, k=3, doc_id="doc_paper_b")
@@ -87,7 +107,7 @@ async def test_document_scoping_and_switching():
         assert "redeep" not in chunk["text"].lower()
 
     # -------------------------------------------------------------
-    # TEST 4: Switch Back to Document A
+    # TEST 5: Switch Back to Document A
     # -------------------------------------------------------------
     retriever_state_a2 = run_retriever_agent(query_title, k=3, doc_id="doc_paper_a")
     top_ev_a2 = retriever_state_a2.get("top_evidence", [])
@@ -98,17 +118,19 @@ async def test_document_scoping_and_switching():
         assert "drug" not in chunk["text"].lower()
 
     # -------------------------------------------------------------
-    # TEST 5: Unsupported Question (Honest Abstention)
+    # TEST 6: Off-Topic / Math Question: "What is 2 + 2?"
     # -------------------------------------------------------------
-    query_unsupported = "What is the author's favorite food?"
-    retriever_state_unsupp = run_retriever_agent(query_unsupported, k=3, doc_id="doc_paper_a")
-    top_ev_unsupp = retriever_state_unsupp.get("top_evidence", [])
+    query_math = "What is 2 + 2?"
+    retriever_state_math = run_retriever_agent(query_math, k=3, doc_id="doc_paper_a")
+    top_ev_math = retriever_state_math.get("top_evidence", [])
 
-    critic_unsupp = run_critic_agent(query_unsupported, top_ev_unsupp)
-    trust_unsupp = compute_trust_report(query_unsupported, critic_report=critic_unsupp["critic_report"], doc_id="doc_paper_a")
+    critic_math = run_critic_agent(query_math, top_ev_math)
+    trust_math = compute_trust_report(query_math, critic_report=critic_math["critic_report"], doc_id="doc_paper_a")
 
-    assert trust_unsupp["trust_score"] < 0.50
-    assert trust_unsupp["decision"] == "abstain"
+    assert trust_math["trust_score"] < 0.50
+    assert trust_math["decision"] == "abstain"
 
-    res_unsupp = run_full_pipeline(query_unsupported, trust_unsupp, doc_id="doc_paper_a")["final_report"]
-    assert "couldn't find sufficient" in res_unsupp["final_answer"].lower() or "not find sufficient" in res_unsupp["final_answer"].lower()
+    res_math = run_full_pipeline(query_math, trust_math, doc_id="doc_paper_a")["final_report"]
+    assert "cannot be answered" in res_math["final_answer"].lower() or "insufficient" in res_math["final_answer"].lower() or "couldn't find" in res_math["final_answer"].lower()
+    # Must NOT have unresolved template placeholder {reason}
+    assert "{reason}" not in res_math["final_answer"]

@@ -2,7 +2,8 @@
 Retriever Agent — LangGraph State.
 
 LangGraph passes a single state object through every node in the graph.
-Includes `doc_id` to strictly scope search to the currently active document.
+Includes `doc_id` to strictly scope search to the currently active document,
+and `query_type` ('DOCUMENT_LEVEL' vs 'SPECIFIC').
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ class RetrieverState(TypedDict, total=False):
     k: int
     doc_id: Optional[str]  # Scopes retrieval exclusively to this document ID
 
-    # ---------- Stage 1: Query Analysis ----------
+    # ---------- Stage 1: Query Analysis & Classification ----------
     analysis: Dict[str, Any]
+    query_type: str  # "DOCUMENT_LEVEL" | "SPECIFIC"
 
     # ---------- Stage 2: Query Decomposition ----------
     sub_queries: List[str]

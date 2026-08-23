@@ -9,6 +9,7 @@ from app.core.exceptions import ServiceUnavailableError
 from app.schemas.synthesis import CitationResponse, SentenceVerdictResponse, SynthesisResponse
 from app.services.cache_service import get_cache_service
 from agents.pipeline.agent import run_full_pipeline
+from agents.retriever.query_analyzer import classify_query_type
 from trust.trust_engine import compute_trust_report
 
 
@@ -57,6 +58,22 @@ class SynthesisService:
             raise ServiceUnavailableError(f"Synthesis pipeline failed: {exc}") from exc
 
         report = final_state["final_report"]
+
+        q_type = classify_query_type(query)
+        retrieved_doc_ids = list({c.get("doc_id") for c in report.get("citations", []) if c.get("doc_id")})
+        retrieved_chunk_ids = [c.get("chunk_id") for c in report.get("citations", [])]
+
+        logger.info(
+            f"\n========================================\n"
+            f"QUESTION:\n{query}\n\n"
+            f"TYPE:\n{q_type}\n\n"
+            f"ACTIVE DOCUMENT ID:\n{effective_doc_id}\n\n"
+            f"RETRIEVED DOCUMENT IDS:\n{retrieved_doc_ids}\n\n"
+            f"RETRIEVED CHUNK IDS:\n{retrieved_chunk_ids}\n\n"
+            f"OTHER DOCUMENTS:\nNONE\n\n"
+            f"VERIFICATION RESULT:\n{report['verification_verdict']}\n"
+            f"========================================"
+        )
 
         response = SynthesisResponse(
             original_query=report["original_query"],
