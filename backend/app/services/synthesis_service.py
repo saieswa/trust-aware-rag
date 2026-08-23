@@ -1,5 +1,5 @@
 """
-Synthesis Service with Document Scoping and Redis Caching.
+Synthesis Service with Document Scoping, Redis Caching, and Structured Answers.
 """
 
 from typing import Any, Dict, Optional
@@ -31,11 +31,7 @@ class SynthesisService:
                 doc_id=None,
                 status="abstained",
                 final_answer="I couldn't find enough evidence in the currently selected document to answer this question.",
-                structured_answer=StructuredAnswer(
-                    answer_type="abstention",
-                    direct_answer="No document selected or indexed.",
-                    evidence=[],
-                ),
+                structured_answer=None,
                 citations=[],
                 synthesis_method="abstained",
                 verification_verdict="approved",
@@ -80,20 +76,15 @@ class SynthesisService:
             f"========================================"
         )
 
-        struct_raw = report.get("structured_answer")
-        structured_ans = None
-        if struct_raw:
-            try:
-                structured_ans = StructuredAnswer(**struct_raw)
-            except Exception as e:
-                logger.warning(f"Could not parse structured_answer: {e}")
+        structured_data = report.get("structured_answer")
+        structured_answer_obj = StructuredAnswer(**structured_data) if structured_data else None
 
         response = SynthesisResponse(
             original_query=report["original_query"],
             doc_id=effective_doc_id,
             status=report["status"],
             final_answer=report["final_answer"],
-            structured_answer=structured_ans,
+            structured_answer=structured_answer_obj,
             citations=[CitationResponse(**c) for c in report["citations"]],
             synthesis_method=report["synthesis_method"],
             verification_verdict=report["verification_verdict"],

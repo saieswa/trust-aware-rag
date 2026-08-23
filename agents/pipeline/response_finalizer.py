@@ -1,5 +1,7 @@
 """
 Pipeline Final Node — Finalize Response.
+
+Assembles everything the Synthesizer and Verifier produced into the structured report.
 """
 
 from __future__ import annotations
@@ -23,7 +25,8 @@ def finalize_response(state: SynthesisVerificationState) -> Dict[str, Any]:
         final_answer = (
             "I wasn't able to produce an answer fully supported by the evidence after "
             "multiple attempts, so I'm not confident enough to answer this directly. "
-            "The closest attempt contains claims that couldn't be verified against the active document."
+            "The closest attempt is shown below for reference, but it contains claims "
+            "that couldn't be verified against the evidence."
         )
         status = "verification_failed"
     else:

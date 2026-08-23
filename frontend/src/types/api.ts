@@ -1,7 +1,6 @@
 /**
  * Shared types mirroring the backend's Pydantic schemas
- * (backend/app/schemas/*.py). Kept in one file since the frontend only
- * ever consumes these shapes — it doesn't own them, the backend does.
+ * (backend/app/schemas/*.py).
  */
 
 export type Decision = "answer" | "retrieve_more" | "abstain";
@@ -75,19 +74,23 @@ export interface StructuredEvidenceItem {
   page?: number;
   text: string;
   source: string;
-  chunk_id?: string;
+}
+
+export interface StructuredTrust {
+  score: number;
+  label: string;
 }
 
 export interface StructuredAnswer {
-  answer_type: "document_explanation" | "specific_answer" | "abstention" | string;
+  answer_type: "document_explanation" | "specific_answer" | string;
   document_overview?: string;
   main_idea?: string;
   steps?: string[];
   key_points?: string[];
   main_findings?: string[];
-  simple_explanation?: string;
   direct_answer?: string;
   evidence?: StructuredEvidenceItem[];
+  trust?: StructuredTrust;
 }
 
 export interface SynthesisResponse {
@@ -95,7 +98,7 @@ export interface SynthesisResponse {
   doc_id?: string | null;
   status: SynthesisStatus;
   final_answer: string;
-  structured_answer?: StructuredAnswer;
+  structured_answer?: StructuredAnswer | null;
   citations: CitationResponse[];
   synthesis_method: string;
   verification_verdict: string;

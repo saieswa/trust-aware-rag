@@ -24,12 +24,9 @@ from agents.state.synthesis_state import SynthesisVerificationState
 _STOPWORDS = {
     "the", "a", "an", "is", "are", "of", "to", "for", "and", "or", "in", "on",
     "this", "that", "with", "as", "be", "by", "from", "at", "it", "its",
-    "section", "presents", "introduces", "analyzes", "overview", "idea",
-    "explanation", "points", "topics", "findings", "simple", "terms", "document",
-    "key", "main", "step", "steps", "primary", "goal",
 }
 _CITATION_PATTERN = re.compile(r"\[([a-zA-Z0-9_]+)\]")
-MIN_OVERLAP_FOR_SUPPORT = 0.08
+MIN_OVERLAP_FOR_SUPPORT = 0.10
 
 
 class SentenceVerdict(BaseModel):
@@ -77,7 +74,6 @@ def _heuristic_check(
     evidence_by_id = {c["chunk_id"]: c["text"] for c in evidence}
     evidence_doc_by_id = {c["chunk_id"]: c.get("doc_id") for c in evidence}
     evidence_tokens_by_id = {cid: _tokenize(text) for cid, text in evidence_by_id.items()}
-    all_evidence_tokens = set().union(*evidence_tokens_by_id.values()) if evidence_tokens_by_id else set()
 
     verdicts: List[Dict[str, Any]] = []
     for sentence in sentences:
@@ -107,8 +103,11 @@ def _heuristic_check(
             verdicts.append({"sentence": sentence, "verdict": "supported", "suggestion": None})
             continue
 
-        # 3. Check word overlap with active document chunks
-        best_overlap = _word_overlap(sentence_tokens, all_evidence_tokens)
+        # 3. If no citation or unindexed citation, check word overlap with evidence
+        best_overlap = max(
+            (_word_overlap(sentence_tokens, tokens) for tokens in evidence_tokens_by_id.values()),
+            default=0.0,
+        )
 
         if best_overlap >= MIN_OVERLAP_FOR_SUPPORT or not sentence_tokens:
             verdicts.append({"sentence": sentence, "verdict": "supported", "suggestion": None})
@@ -118,8 +117,8 @@ def _heuristic_check(
                     "sentence": sentence,
                     "verdict": "unsupported",
                     "suggestion": (
-                        f"Sentence has low overlap with active document chunks "
-                        f"(overlap={best_overlap:.2f})."
+                        f"Sentence has no verified citation matching active document chunks "
+                        f"(overlap={best_overlap:.2f}) — add a valid [chunk_id] citation."
                     ),
                 }
             )

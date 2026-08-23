@@ -11,18 +11,14 @@ import {
   HelpCircle,
   ChevronDown,
   ChevronUp,
-  ShieldCheck,
-  Sparkles,
   Info,
-  Layers,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { Card, CardBody } from "@/components/ui/Card";
 import { Skeleton, ErrorAlert } from "@/components/ui/ErrorAlert";
 import { EvidenceCard } from "@/components/evidence/EvidenceCard";
+import { StructuredAnswerView } from "@/components/evidence/StructuredAnswerView";
 import { ActiveDocumentBadge } from "@/components/common/ActiveDocumentBadge";
-import { StructuredAnswerViewer } from "@/components/chat/StructuredAnswerViewer";
 import { api, ApiError } from "@/lib/api";
 import type {
   DocumentItem,
@@ -76,7 +72,7 @@ function EvidenceViewerContent() {
         api.runSynthesis(q, 5, 2, targetDocId),
       ]);
 
-      // Strict document isolation check: keep only chunks from targetDocId
+      // Strict backend document isolation check: keep only chunks from targetDocId
       const sanitizedEvidence = (trustRes.evidence || []).filter(
         (e) => e.doc_id === targetDocId
       );
@@ -105,49 +101,6 @@ function EvidenceViewerContent() {
     }
   }, [highlightedChunk, report]);
 
-  // Confidence Level Derivation
-  const getConfidenceBadge = () => {
-    if (!report || !synthesis) return null;
-    const score = report.trust_score;
-    const status = synthesis.status;
-
-    if (status === "verification_failed" || synthesis.hallucination_ratio > 0.2) {
-      return {
-        label: "Verification Failed",
-        tone: "red" as const,
-        description: "One or more factual claims could not be verified by document evidence.",
-        icon: <XCircle className="h-4 w-4 text-rose-400" />,
-        barColor: "bg-rose-500",
-      };
-    }
-    if (status === "abstained" || score < 0.5) {
-      return {
-        label: "Needs More Evidence",
-        tone: "amber" as const,
-        description: "Insufficient direct evidence found in the active document to answer reliably.",
-        icon: <HelpCircle className="h-4 w-4 text-amber-400" />,
-        barColor: "bg-amber-500",
-      };
-    }
-    if (score >= 0.75) {
-      return {
-        label: "High Confidence",
-        tone: "green" as const,
-        description: "High agreement and direct citation support from the active document.",
-        icon: <CheckCircle2 className="h-4 w-4 text-emerald-400" />,
-        barColor: "bg-emerald-400",
-      };
-    }
-    return {
-      label: "Medium Confidence",
-      tone: "amber" as const,
-      description: "Answer is supported but evidence specificity or coverage is moderate.",
-      icon: <CheckCircle2 className="h-4 w-4 text-amber-400" />,
-      barColor: "bg-amber-400",
-    };
-  };
-
-  const confidence = getConfidenceBadge();
   const topEvidence = report?.evidence ? report.evidence.slice(0, 3) : [];
 
   return (
@@ -157,7 +110,7 @@ function EvidenceViewerContent() {
         <div>
           <h1 className="font-mono text-sm font-semibold text-ink-primary">Evidence Verification</h1>
           <p className="text-xs text-ink-muted mt-0.5">
-            Inspect verified answers and supporting passages from your active document.
+            Inspect verified answers, step-by-step explanations, and supporting passages from your active document.
           </p>
         </div>
         <ActiveDocumentBadge activeDocId={activeDoc?.doc_id} onDocChange={handleDocChange} />
@@ -173,13 +126,13 @@ function EvidenceViewerContent() {
             </span>
             {activeDoc && (
               <span className="font-mono text-[10px] text-ink-muted">
-                ({activeDoc.chunk_count} indexed chunks)
+                ({activeDoc.chunk_count} chunks indexed)
               </span>
             )}
           </div>
         </div>
         <Badge tone={activeDoc ? "green" : "amber"}>
-          {activeDoc ? "Active Document" : "No document indexed"}
+          {activeDoc ? "Indexed" : "No document indexed"}
         </Badge>
       </div>
 
@@ -214,7 +167,7 @@ function EvidenceViewerContent() {
           <AlertCircle className="h-8 w-8 text-amber-400 mx-auto mb-2" />
           <p className="font-mono text-sm font-semibold text-ink-primary">No document indexed</p>
           <p className="text-xs text-ink-muted mt-1 max-w-sm mx-auto">
-            Please go to the <strong>Admin</strong> page to upload a document or activate an existing one.
+            Please go to the <strong>Admin</strong> page to upload a research paper or activate an existing document.
           </p>
         </div>
       )}
@@ -232,122 +185,26 @@ function EvidenceViewerContent() {
       {/* Main Results View */}
       {activeDoc && !loading && !error && report && synthesis && (
         <div className="flex flex-col gap-6">
-          {/* ============================================================ */}
-          {/* SECTION 1: QUESTION & PROMINENT STRUCTURED ANSWER */}
-          {/* ============================================================ */}
-          <div className="flex flex-col gap-3">
-            {/* Question Banner */}
-            <div className="rounded-lg border border-hairline bg-panel p-4 flex items-start justify-between gap-4">
-              <div>
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted font-mono">
-                  Question
-                </span>
-                <p className="font-medium text-base text-ink-primary mt-1">
-                  &ldquo;{query}&rdquo;
-                </p>
-              </div>
-              {confidence && (
-                <Badge tone={confidence.tone}>
-                  {confidence.label}
-                </Badge>
-              )}
-            </div>
-
-            {/* Structured Verified Answer Cards */}
-            <StructuredAnswerViewer
-              structuredAnswer={synthesis.structured_answer}
-              rawText={synthesis.final_answer}
-            />
+          {/* User Question */}
+          <div className="rounded-xl border border-hairline bg-panel/50 px-4 py-3 flex items-center gap-2">
+            <span className="text-xs font-mono font-semibold uppercase text-ink-muted">Question:</span>
+            <p className="text-sm font-medium text-ink-primary">&ldquo;{query}&rdquo;</p>
           </div>
 
-          {/* ============================================================ */}
-          {/* SECTION 2: SEPARATE TRUST RESULT & VERIFICATION DETAILS */}
-          {/* ============================================================ */}
-          <div className="rounded-lg border border-hairline bg-panel p-4">
-            <div className="flex items-center justify-between mb-3 border-b border-hairline pb-2.5">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4 text-accent-phosphor" />
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-ink-primary font-mono">
-                  🔐 Trust Result
-                </h2>
-              </div>
-              {confidence && (
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs font-bold text-accent-phosphor">
-                    {Math.round(report.trust_score * 100)}%
-                  </span>
-                  <span className="text-xs text-ink-muted">
-                    — {confidence.label}
-                  </span>
-                </div>
-              )}
-            </div>
+          {/* Structured Answer View */}
+          <StructuredAnswerView
+            synthesis={synthesis}
+            structuredAnswer={synthesis.structured_answer}
+          />
 
-            <div className="mb-3">
-              <span className="text-xs font-medium text-ink-muted">Why this answer is trusted:</span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-              {/* Point 1: Direct Support */}
-              <div className="flex items-start gap-2 rounded bg-raised/50 border border-hairline/50 p-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-semibold text-ink-primary">✓ Evidence supports the answer</span>
-                  <p className="text-ink-muted text-[11px] mt-0.5">
-                    {report.diagnostics.support_count > 0
-                      ? `${report.diagnostics.support_count} retrieved passage(s) directly verify the claims.`
-                      : "Evidence provides direct verification."}
-                  </p>
-                </div>
-              </div>
-
-              {/* Point 2: Active Document Provenance */}
-              <div className="flex items-start gap-2 rounded bg-raised/50 border border-hairline/50 p-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-semibold text-ink-primary">✓ Comes from active document</span>
-                  <p className="text-ink-muted text-[11px] mt-0.5 truncate max-w-[260px]">
-                    100% of evidence belongs to <strong>{activeDoc.filename}</strong>.
-                  </p>
-                </div>
-              </div>
-
-              {/* Point 3: Contradiction Check */}
-              <div className="flex items-start gap-2 rounded bg-raised/50 border border-hairline/50 p-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-semibold text-ink-primary">✓ No conflicting evidence</span>
-                  <p className="text-ink-muted text-[11px] mt-0.5">
-                    {report.diagnostics.contradiction_count === 0
-                      ? "No conflicting or contradictory evidence detected."
-                      : `${report.diagnostics.contradiction_count} potential contradiction(s) analyzed.`}
-                  </p>
-                </div>
-              </div>
-
-              {/* Point 4: Strict Isolation */}
-              <div className="flex items-start gap-2 rounded bg-raised/50 border border-hairline/50 p-2.5">
-                <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-semibold text-ink-primary">✓ No other document was used</span>
-                  <p className="text-ink-muted text-[11px] mt-0.5">
-                    Filtered strictly to active document without history contamination.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ============================================================ */}
-          {/* SECTION 3: TOP SUPPORTING EVIDENCE CHUNKS */}
-          {/* ============================================================ */}
-          <div className="flex flex-col gap-3">
+          {/* Raw Retrieved Evidence Chunks (Top 3) */}
+          <div className="flex flex-col gap-3 pt-2">
             <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-ink-primary font-mono">
-                📚 Supporting Evidence ({topEvidence.length})
+              <h2 className="text-xs font-mono font-semibold uppercase tracking-wider text-accent-phosphor">
+                Top Retrieved Passages ({topEvidence.length})
               </h2>
-              <span className="text-[11px] text-ink-muted">
-                Showing top supporting passages from {activeDoc.filename}
+              <span className="text-[11px] font-mono text-ink-muted">
+                Direct chunks from {activeDoc.filename}
               </span>
             </div>
 
@@ -359,22 +216,9 @@ function EvidenceViewerContent() {
                 highlighted={e.chunk_id === highlightedChunk}
               />
             ))}
-
-            {topEvidence.length === 0 && (
-              <div className="rounded-lg border border-hairline bg-panel/50 p-8 text-center">
-                <p className="font-mono text-sm text-ink-primary">
-                  Insufficient evidence in the selected document.
-                </p>
-                <p className="text-xs text-ink-muted mt-1">
-                  No verified chunks in &ldquo;{activeDoc.filename}&rdquo; met the relevance criteria.
-                </p>
-              </div>
-            )}
           </div>
 
-          {/* ============================================================ */}
-          {/* SECTION 4: ADVANCED TECHNICAL DETAILS (COLLAPSIBLE) */}
-          {/* ============================================================ */}
+          {/* Collapsible Advanced Technical Details */}
           <div className="rounded-lg border border-hairline bg-panel/60 overflow-hidden">
             <button
               type="button"
@@ -383,7 +227,7 @@ function EvidenceViewerContent() {
             >
               <div className="flex items-center gap-2">
                 <Info className="h-3.5 w-3.5 text-accent-phosphor" />
-                <span>Technical Details &amp; Diagnostics</span>
+                <span>Advanced Technical Details &amp; Diagnostics</span>
               </div>
               {showAdvanced ? (
                 <ChevronUp className="h-3.5 w-3.5" />
@@ -396,7 +240,7 @@ function EvidenceViewerContent() {
               <div className="border-t border-hairline p-4 flex flex-col gap-3 text-xs bg-raised/30">
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   <div className="rounded border border-hairline bg-panel p-2.5">
-                    <span className="text-[10px] text-ink-muted uppercase">Active Doc ID</span>
+                    <span className="text-[10px] text-ink-muted uppercase">Target Doc ID</span>
                     <p className="font-mono text-xs text-accent-phosphor truncate mt-0.5">
                       {activeDoc.doc_id}
                     </p>
@@ -421,7 +265,7 @@ function EvidenceViewerContent() {
                   </div>
                 </div>
 
-                {/* Feature Breakdown Table */}
+                {/* Raw Feature Breakdown Table */}
                 <div className="overflow-x-auto rounded border border-hairline bg-panel mt-1">
                   <table className="w-full text-left text-[11px]">
                     <thead className="border-b border-hairline bg-raised font-mono text-[10px] uppercase tracking-wider text-ink-muted">

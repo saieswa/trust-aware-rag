@@ -1,5 +1,5 @@
 """
-Pydantic schemas for the Synthesizer + Verifier pipeline API.
+Pydantic schemas for the Synthesizer + Verifier pipeline API with Structured Answers.
 """
 
 from typing import Any, Dict, List, Optional
@@ -34,19 +34,23 @@ class StructuredEvidenceItem(BaseModel):
     page: Optional[int] = 1
     text: str
     source: str
-    chunk_id: Optional[str] = None
+
+
+class StructuredTrust(BaseModel):
+    score: float
+    label: str
 
 
 class StructuredAnswer(BaseModel):
-    answer_type: str = Field(default="document_explanation", description="'document_explanation', 'specific_answer', or 'abstention'")
+    answer_type: str = Field(default="document_explanation", description="'document_explanation' | 'specific_answer'")
     document_overview: Optional[str] = None
     main_idea: Optional[str] = None
-    steps: List[str] = Field(default_factory=list)
-    key_points: List[str] = Field(default_factory=list)
-    main_findings: List[str] = Field(default_factory=list)
-    simple_explanation: Optional[str] = None
+    steps: Optional[List[str]] = None
+    key_points: Optional[List[str]] = None
+    main_findings: Optional[List[str]] = None
     direct_answer: Optional[str] = None
-    evidence: List[StructuredEvidenceItem] = Field(default_factory=list)
+    evidence: Optional[List[StructuredEvidenceItem]] = None
+    trust: Optional[StructuredTrust] = None
 
 
 class SynthesisResponse(BaseModel):

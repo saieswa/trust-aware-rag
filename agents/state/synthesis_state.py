@@ -1,10 +1,7 @@
 """
 Synthesizer + Verifier — Shared LangGraph State.
 
-These two agents are tightly coupled by design: the Verifier's job is to
-check the Synthesizer's output sentence-by-sentence, and — if it finds
-unsupported claims — send it back with concrete revision feedback for a
-second attempt.
+Carries state, verified evidence, structured answer payloads, and verification feedback.
 """
 
 from __future__ import annotations
