@@ -30,11 +30,31 @@ class SentenceVerdictResponse(BaseModel):
     suggestion: Optional[str] = None
 
 
+class StructuredEvidenceItem(BaseModel):
+    page: Optional[int] = 1
+    text: str
+    source: str
+    chunk_id: Optional[str] = None
+
+
+class StructuredAnswer(BaseModel):
+    answer_type: str = Field(default="document_explanation", description="'document_explanation', 'specific_answer', or 'abstention'")
+    document_overview: Optional[str] = None
+    main_idea: Optional[str] = None
+    steps: List[str] = Field(default_factory=list)
+    key_points: List[str] = Field(default_factory=list)
+    main_findings: List[str] = Field(default_factory=list)
+    simple_explanation: Optional[str] = None
+    direct_answer: Optional[str] = None
+    evidence: List[StructuredEvidenceItem] = Field(default_factory=list)
+
+
 class SynthesisResponse(BaseModel):
     original_query: str
     doc_id: Optional[str] = None
     status: str = Field(..., description="'approved', 'abstained', or 'verification_failed'.")
     final_answer: str
+    structured_answer: Optional[StructuredAnswer] = None
     citations: List[CitationResponse]
     synthesis_method: str = Field(..., description="'llm', 'heuristic', or 'abstained'.")
     verification_verdict: str

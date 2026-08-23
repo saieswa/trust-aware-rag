@@ -20,8 +20,19 @@ from agents.retriever.query_analyzer import classify_query_type
 from agents.state.synthesis_state import SynthesisVerificationState
 
 
-class SynthesizedAnswer(BaseModel):
-    answer: str = Field(description="The structured answer text, with inline [chunk_id] citations on factual sentences.")
+class StructuredDocOutput(BaseModel):
+    document_overview: str = Field(description="1-2 clear sentences summarizing what the document is about.")
+    main_idea: str = Field(description="The central problem, thesis, or objective of the document.")
+    steps: List[str] = Field(description="3-4 step-by-step points explaining how the approach, workflow, or document develops.")
+    key_points: List[str] = Field(description="3-4 key concepts, methods, or takeaways.")
+    main_findings: List[str] = Field(description="3-4 major findings, results, or conclusions.")
+    simple_explanation: str = Field(description="Simple, easy-to-understand explanation for a non-technical reader.")
+
+
+class StructuredSpecificOutput(BaseModel):
+    direct_answer: str = Field(description="Direct, concise answer to the specific question.")
+    evidence_quote: str = Field(description="Short direct excerpt supporting the answer.")
+    source_info: str = Field(description="Document name, page, and section.")
 
 
 def _format_abstain_message(query: str = "", reason: Optional[str] = None) -> str:
@@ -37,13 +48,19 @@ def _format_abstain_message(query: str = "", reason: Optional[str] = None) -> st
     return "Insufficient verified evidence was found in the active document to answer this question reliably."
 
 
+def _clean_internal_citations(text: str) -> str:
+    """Removes raw internal chunk IDs like [doc_xxx_chunk0] from user-facing markdown."""
+    return re.sub(r"\s*\[doc_[a-zA-Z0-9_]+\]", "", text).strip()
+
+
 def _llm_generate(
     query: str,
     evidence: List[Dict[str, Any]],
     revision_feedback: Optional[str],
     doc_id: Optional[str] = None,
     query_type: str = "SPECIFIC",
-) -> str:
+    doc_title: str = "Document",
+) -> tuple[str, Dict[str, Any]]:
     llm = get_groq_llm(temperature=0.2, timeout=25)
 
     evidence_block = "\n\n".join(
@@ -54,23 +71,91 @@ def _llm_generate(
         REVISION_FEEDBACK_TEMPLATE.format(feedback=revision_feedback) if revision_feedback else ""
     )
 
-    structured_llm = llm.with_structured_output(SynthesizedAnswer)
-    result = structured_llm.invoke(
-        [
-            ("system", SYNTHESIS_SYSTEM_PROMPT),
-            (
-                "human",
-                SYNTHESIS_USER_TEMPLATE.format(
-                    query=query,
-                    doc_id=doc_id or "Current Document",
-                    query_type=query_type,
-                    evidence_block=evidence_block,
-                    revision_block=revision_block,
+    evidence_items = [
+        {
+            "page": c.get("page_number", 1) or 1,
+            "text": (c["text"][:180].strip() + "…") if len(c["text"]) > 180 else c["text"].strip(),
+            "source": c.get("source_title", doc_title),
+            "chunk_id": c["chunk_id"],
+        }
+        for c in evidence[:3]
+    ]
+
+    if query_type == "DOCUMENT_LEVEL":
+        structured_llm = llm.with_structured_output(StructuredDocOutput)
+        res: StructuredDocOutput = structured_llm.invoke(
+            [
+                ("system", SYNTHESIS_SYSTEM_PROMPT),
+                (
+                    "human",
+                    SYNTHESIS_USER_TEMPLATE.format(
+                        query=query,
+                        doc_id=doc_id or "Current Document",
+                        query_type=query_type,
+                        evidence_block=evidence_block,
+                        revision_block=revision_block,
+                    ),
                 ),
-            ),
-        ]
-    )
-    return result.answer
+            ]
+        )
+
+        steps_md = "\n".join(f"{i+1}. {s}" for i, s in enumerate(res.steps))
+        key_points_md = "\n".join(f"• {k}" for k in res.key_points)
+        findings_md = "\n".join(f"• {f}" for f in res.main_findings)
+
+        markdown_answer = (
+            f"### Document Overview\n{res.document_overview}\n\n"
+            f"### Main Idea\n{res.main_idea}\n\n"
+            f"### Step-by-Step Explanation\n{steps_md}\n\n"
+            f"### Key Points\n{key_points_md}\n\n"
+            f"### Main Findings & Topics\n{findings_md}\n\n"
+            f"### Simple Explanation\n{res.simple_explanation}"
+        )
+
+        struct_dict = {
+            "answer_type": "document_explanation",
+            "document_overview": res.document_overview,
+            "main_idea": res.main_idea,
+            "steps": res.steps,
+            "key_points": res.key_points,
+            "main_findings": res.main_findings,
+            "simple_explanation": res.simple_explanation,
+            "evidence": evidence_items,
+        }
+        return markdown_answer, struct_dict
+
+    else:
+        structured_llm = llm.with_structured_output(StructuredSpecificOutput)
+        spec_res: StructuredSpecificOutput = structured_llm.invoke(
+            [
+                ("system", SYNTHESIS_SYSTEM_PROMPT),
+                (
+                    "human",
+                    SYNTHESIS_USER_TEMPLATE.format(
+                        query=query,
+                        doc_id=doc_id or "Current Document",
+                        query_type=query_type,
+                        evidence_block=evidence_block,
+                        revision_block=revision_block,
+                    ),
+                ),
+            ]
+        )
+
+        markdown_answer = (
+            f"### Answer\n{spec_res.direct_answer}\n\n"
+            f"### Evidence\n\"{spec_res.evidence_quote}\"\n\n"
+            f"### Source\n{spec_res.source_info}"
+        )
+
+        struct_dict = {
+            "answer_type": "specific_answer",
+            "direct_answer": spec_res.direct_answer,
+            "evidence_summary": spec_res.evidence_quote,
+            "source_summary": spec_res.source_info,
+            "evidence": evidence_items,
+        }
+        return markdown_answer, struct_dict
 
 
 def _heuristic_generate(
@@ -78,51 +163,83 @@ def _heuristic_generate(
     query: str = "",
     query_type: str = "SPECIFIC",
     doc_title: str = "Document",
-) -> str:
+) -> tuple[str, Dict[str, Any]]:
     if not evidence:
-        return "I couldn't find enough evidence in the currently selected document to answer this question."
+        msg = "I couldn't find enough evidence in the currently selected document to answer this question."
+        return msg, {"answer_type": "abstention", "direct_answer": msg, "evidence": []}
 
     q_lower = query.lower()
+    evidence_items = [
+        {
+            "page": c.get("page_number", 1) or 1,
+            "text": (c["text"][:180].strip() + "…") if len(c["text"]) > 180 else c["text"].strip(),
+            "source": c.get("source_title", doc_title),
+            "chunk_id": c["chunk_id"],
+        }
+        for c in evidence[:3]
+    ]
 
     if query_type == "DOCUMENT_LEVEL":
         first_chunk = evidence[0]
         first_text = first_chunk["text"].strip()
         first_sent = first_text.split(". ")[0].rstrip(".") + "."
 
-        overview = f"This document presents research on {doc_title}. {first_sent} [{first_chunk['chunk_id']}]"
-        purpose = f"The primary purpose is to address key challenges in {doc_title} and evaluate its methodology [{first_chunk['chunk_id']}]."
+        overview = f"This document presents research on {doc_title}. {first_sent}"
+        main_idea = f"The primary goal is to address key challenges in {doc_title}: {first_sent}"
 
-        concepts = []
-        findings = []
+        steps = []
+        for i, c in enumerate(evidence[:3]):
+            s = c["text"].strip().split(". ")[0].rstrip(".") + "."
+            steps.append(f"Section {i+1}: {s}")
+
+        if not steps:
+            steps = [f"Introduces the core concepts and findings of {doc_title}."]
+
+        key_points = []
+        main_findings = []
         for i, c in enumerate(evidence[:4]):
             sent = c["text"].strip().split(". ")[0].rstrip(".") + "."
             if i % 2 == 0:
-                concepts.append(f"- {sent} [{c['chunk_id']}]")
+                key_points.append(sent)
             else:
-                findings.append(f"- {sent} [{c['chunk_id']}]")
+                main_findings.append(sent)
 
-        if not concepts:
-            concepts = [f"- Core framework and methodology [{first_chunk['chunk_id']}]"]
-        if not findings:
-            findings = [f"- Experimental evaluation and results [{evidence[-1]['chunk_id']}]"]
+        if not key_points:
+            key_points = [f"Foundational concepts for {doc_title}."]
+        if not main_findings:
+            main_findings = [f"Experimental and analytical results for {doc_title}."]
 
-        evidence_lines = [
-            f"- Page {c.get('page_number', 1)} — {c['text'][:90].strip()}... [{c['chunk_id']}]"
-            for c in evidence[:3]
-        ]
+        simple_exp = f"In simple terms, this document explains {doc_title}, highlighting its methodology and results."
 
-        return (
-            f"### 📄 Document Overview\n{overview}\n\n"
-            f"### 🎯 Main Purpose\n{purpose}\n\n"
-            f"### 🔑 Key Concepts\n" + "\n".join(concepts) + "\n\n"
-            f"### 📌 Main Findings / Topics\n" + "\n".join(findings) + "\n\n"
-            f"### 🧠 Simple Explanation\nThis document provides an in-depth analysis of {doc_title}, explaining its motivation, technical approach, and performance findings.\n\n"
-            f"### 📚 Evidence Used\n" + "\n".join(evidence_lines)
+        steps_md = "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps))
+        kp_md = "\n".join(f"• {k}" for k in key_points)
+        mf_md = "\n".join(f"• {f}" for f in main_findings)
+
+        markdown_answer = (
+            f"### Document Overview\n{overview}\n\n"
+            f"### Main Idea\n{main_idea}\n\n"
+            f"### Step-by-Step Explanation\n{steps_md}\n\n"
+            f"### Key Points\n{kp_md}\n\n"
+            f"### Main Findings & Topics\n{mf_md}\n\n"
+            f"### Simple Explanation\n{simple_exp}"
         )
+
+        struct_dict = {
+            "answer_type": "document_explanation",
+            "document_overview": overview,
+            "main_idea": main_idea,
+            "steps": steps,
+            "key_points": key_points,
+            "main_findings": main_findings,
+            "simple_explanation": simple_exp,
+            "evidence": evidence_items,
+        }
+        return markdown_answer, struct_dict
 
     # Specific query handling
     if any(t in q_lower for t in ["title", "name of this"]):
         GENERIC_SECTIONS = {"abstract", "introduction", "guideline", "table", "figure", "section"}
+        clean_title = doc_title
         for chunk in evidence:
             text = chunk["text"].strip()
             lines = [l.strip() for l in text.split("\n") if l.strip()]
@@ -131,45 +248,60 @@ def _heuristic_generate(
                     continue
                 if len(line) > 5:
                     clean_title = re.sub(r"[\.\n\r]+", " ", line).strip()
-                    return (
-                        f"### Answer\nThe title of the paper is {clean_title} [{chunk['chunk_id']}].\n\n"
-                        f"### Evidence\n\"{chunk['text'][:140].strip()}...\"\n\n"
-                        f"### Source\n{chunk.get('source_title', doc_title)} (Page {chunk.get('page_number', 1)})"
-                    )
+                    break
 
-        first_chunk = evidence[0]
-        source_title = first_chunk.get("source_title") or doc_title
-        clean_title = re.sub(r"[\.\n\r]+", " ", source_title).strip()
-        return (
-            f"### Answer\nThe title of the document is {clean_title} [{first_chunk['chunk_id']}].\n\n"
-            f"### Evidence\n\"{first_chunk['text'][:140].strip()}...\"\n\n"
-            f"### Source\n{source_title} (Page {first_chunk.get('page_number', 1)})"
-        )
+        direct_ans = f"The title of the paper is {clean_title}."
+        quote = evidence[0]["text"][:140].strip() + "…"
+        source = f"{doc_title} — Page {evidence[0].get('page_number', 1)}"
+
+        markdown_answer = f"### Answer\n{direct_ans}\n\n### Evidence\n\"{quote}\"\n\n### Source\n{source}"
+        struct_dict = {
+            "answer_type": "specific_answer",
+            "direct_answer": direct_ans,
+            "evidence_summary": quote,
+            "source_summary": source,
+            "evidence": evidence_items,
+        }
+        return markdown_answer, struct_dict
 
     if any(t in q_lower for t in ["author", "authors", "who wrote"]):
+        author_line = "Authors listed in document"
         for chunk in evidence:
             lines = [l.strip() for l in chunk["text"].split("\n") if l.strip()]
             for line in lines:
                 if any(c.isdigit() for c in line) and len(line.split(",")) >= 2:
-                    return (
-                        f"### Answer\nThe authors of the paper are {line} [{chunk['chunk_id']}].\n\n"
-                        f"### Evidence\n\"{chunk['text'][:140].strip()}...\"\n\n"
-                        f"### Source\n{chunk.get('source_title', doc_title)} (Page {chunk.get('page_number', 1)})"
-                    )
-        return (
-            f"### Answer\nAuthors mentioned in the document include: {evidence[0]['text'][:100]}... [{evidence[0]['chunk_id']}].\n\n"
-            f"### Evidence\n\"{evidence[0]['text'][:140].strip()}...\"\n\n"
-            f"### Source\n{evidence[0].get('source_title', doc_title)} (Page {evidence[0].get('page_number', 1)})"
-        )
+                    author_line = line
+                    break
 
-    # General specific query
+        direct_ans = f"The authors of the document are {author_line}."
+        quote = evidence[0]["text"][:140].strip() + "…"
+        source = f"{doc_title} — Page {evidence[0].get('page_number', 1)}"
+
+        markdown_answer = f"### Answer\n{direct_ans}\n\n### Evidence\n\"{quote}\"\n\n### Source\n{source}"
+        struct_dict = {
+            "answer_type": "specific_answer",
+            "direct_answer": direct_ans,
+            "evidence_summary": quote,
+            "source_summary": source,
+            "evidence": evidence_items,
+        }
+        return markdown_answer, struct_dict
+
+    # General specific question
     first_chunk = evidence[0]
-    first_sentence = first_chunk["text"].strip().split(". ")[0].rstrip(".") + "."
-    return (
-        f"### Answer\n{first_sentence} [{first_chunk['chunk_id']}]\n\n"
-        f"### Evidence\n\"{first_chunk['text'][:150].strip()}...\"\n\n"
-        f"### Source\n{first_chunk.get('source_title', doc_title)} (Page {first_chunk.get('page_number', 1)})"
-    )
+    direct_ans = first_chunk["text"].strip().split(". ")[0].rstrip(".") + "."
+    quote = first_chunk["text"][:140].strip() + "…"
+    source = f"{doc_title} — Page {first_chunk.get('page_number', 1)}"
+
+    markdown_answer = f"### Answer\n{direct_ans}\n\n### Evidence\n\"{quote}\"\n\n### Source\n{source}"
+    struct_dict = {
+        "answer_type": "specific_answer",
+        "direct_answer": direct_ans,
+        "evidence_summary": quote,
+        "source_summary": source,
+        "evidence": evidence_items,
+    }
+    return markdown_answer, struct_dict
 
 
 def generate_draft_answer(state: SynthesisVerificationState) -> Dict[str, Any]:
@@ -179,8 +311,14 @@ def generate_draft_answer(state: SynthesisVerificationState) -> Dict[str, Any]:
 
     if state.get("abstained"):
         reason = state.get("abstain_reason")
+        msg = _format_abstain_message(query=query, reason=reason)
         return {
-            "draft_answer": _format_abstain_message(query=query, reason=reason),
+            "draft_answer": msg,
+            "structured_answer": {
+                "answer_type": "abstention",
+                "direct_answer": msg,
+                "evidence": [],
+            },
             "citations": [],
             "synthesis_method": "abstained",
         }
@@ -199,8 +337,14 @@ def generate_draft_answer(state: SynthesisVerificationState) -> Dict[str, Any]:
         evidence = valid_evidence
 
     if not evidence:
+        msg = _format_abstain_message(query=query, reason="No verified evidence was found in the active document.")
         return {
-            "draft_answer": _format_abstain_message(query=query, reason="No verified evidence was found in the active document."),
+            "draft_answer": msg,
+            "structured_answer": {
+                "answer_type": "abstention",
+                "direct_answer": msg,
+                "evidence": [],
+            },
             "citations": [],
             "synthesis_method": "abstained",
         }
@@ -209,11 +353,15 @@ def generate_draft_answer(state: SynthesisVerificationState) -> Dict[str, Any]:
     doc_title = evidence[0].get("source_title", "Document") if evidence else "Document"
 
     try:
-        draft_answer = _llm_generate(query, evidence, revision_feedback, doc_id=doc_id, query_type=query_type)
+        draft_answer, struct_dict = _llm_generate(
+            query, evidence, revision_feedback, doc_id=doc_id, query_type=query_type, doc_title=doc_title
+        )
         method = "llm"
     except Exception as exc:
         logger.warning(f"LLM synthesis unavailable ({exc}); falling back to structured heuristic.")
-        draft_answer = _heuristic_generate(evidence, query=query, query_type=query_type, doc_title=doc_title)
+        draft_answer, struct_dict = _heuristic_generate(
+            evidence, query=query, query_type=query_type, doc_title=doc_title
+        )
         method = "heuristic"
 
     citations = [
@@ -222,4 +370,9 @@ def generate_draft_answer(state: SynthesisVerificationState) -> Dict[str, Any]:
     ]
 
     logger.info(f"[SYNTHESIS] Draft answer generated via {method} for query_type={query_type} doc_id={doc_id!r}.")
-    return {"draft_answer": draft_answer, "citations": citations, "synthesis_method": method}
+    return {
+        "draft_answer": draft_answer,
+        "structured_answer": struct_dict,
+        "citations": citations,
+        "synthesis_method": method,
+    }

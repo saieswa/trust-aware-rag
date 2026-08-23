@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 from app.core.exceptions import ServiceUnavailableError
-from app.schemas.synthesis import CitationResponse, SentenceVerdictResponse, SynthesisResponse
+from app.schemas.synthesis import CitationResponse, SentenceVerdictResponse, StructuredAnswer, SynthesisResponse
 from app.services.cache_service import get_cache_service
 from agents.pipeline.agent import run_full_pipeline
 from agents.retriever.query_analyzer import classify_query_type
@@ -31,6 +31,11 @@ class SynthesisService:
                 doc_id=None,
                 status="abstained",
                 final_answer="I couldn't find enough evidence in the currently selected document to answer this question.",
+                structured_answer=StructuredAnswer(
+                    answer_type="abstention",
+                    direct_answer="No document selected or indexed.",
+                    evidence=[],
+                ),
                 citations=[],
                 synthesis_method="abstained",
                 verification_verdict="approved",
@@ -75,11 +80,20 @@ class SynthesisService:
             f"========================================"
         )
 
+        struct_raw = report.get("structured_answer")
+        structured_ans = None
+        if struct_raw:
+            try:
+                structured_ans = StructuredAnswer(**struct_raw)
+            except Exception as e:
+                logger.warning(f"Could not parse structured_answer: {e}")
+
         response = SynthesisResponse(
             original_query=report["original_query"],
             doc_id=effective_doc_id,
             status=report["status"],
             final_answer=report["final_answer"],
+            structured_answer=structured_ans,
             citations=[CitationResponse(**c) for c in report["citations"]],
             synthesis_method=report["synthesis_method"],
             verification_verdict=report["verification_verdict"],

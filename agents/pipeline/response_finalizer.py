@@ -1,11 +1,5 @@
 """
 Pipeline Final Node — Finalize Response.
-
-Assembles everything the Synthesizer and Verifier produced (across
-however many retry attempts happened) into the one structured JSON object
-the API layer returns. If every retry was exhausted and the Verifier still
-rejected the answer, this is where that becomes an honest abstention
-instead of silently shipping a flagged-as-unreliable answer.
 """
 
 from __future__ import annotations
@@ -29,8 +23,7 @@ def finalize_response(state: SynthesisVerificationState) -> Dict[str, Any]:
         final_answer = (
             "I wasn't able to produce an answer fully supported by the evidence after "
             "multiple attempts, so I'm not confident enough to answer this directly. "
-            "The closest attempt is shown below for reference, but it contains claims "
-            "that couldn't be verified against the evidence."
+            "The closest attempt contains claims that couldn't be verified against the active document."
         )
         status = "verification_failed"
     else:
@@ -41,6 +34,7 @@ def finalize_response(state: SynthesisVerificationState) -> Dict[str, Any]:
         "original_query": state["original_query"],
         "status": status,
         "final_answer": final_answer,
+        "structured_answer": state.get("structured_answer"),
         "last_draft_answer": state.get("draft_answer"),
         "citations": state.get("citations", []),
         "synthesis_method": state.get("synthesis_method", "none"),

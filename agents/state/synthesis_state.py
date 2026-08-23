@@ -4,10 +4,7 @@ Synthesizer + Verifier — Shared LangGraph State.
 These two agents are tightly coupled by design: the Verifier's job is to
 check the Synthesizer's output sentence-by-sentence, and — if it finds
 unsupported claims — send it back with concrete revision feedback for a
-second attempt. That feedback loop is the reason they share one state
-schema and one graph (see agents/pipeline/agent.py) rather than being two
-fully independent pipelines: the loop needs to carry `revision_feedback`
-from the Verifier back into the Synthesizer's next attempt.
+second attempt.
 """
 
 from __future__ import annotations
@@ -29,6 +26,7 @@ class SynthesisVerificationState(TypedDict, total=False):
 
     # ---------- Synthesizer: drafting ----------
     draft_answer: str
+    structured_answer: Optional[Dict[str, Any]]
     citations: List[Dict[str, Any]]
     synthesis_method: str  # "llm" | "heuristic" | "abstained"
     revision_feedback: Optional[str]  # set by the Verifier, read on retry

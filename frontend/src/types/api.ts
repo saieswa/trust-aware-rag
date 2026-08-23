@@ -71,10 +71,31 @@ export interface SentenceVerdictResponse {
   suggestion?: string | null;
 }
 
+export interface StructuredEvidenceItem {
+  page?: number;
+  text: string;
+  source: string;
+  chunk_id?: string;
+}
+
+export interface StructuredAnswer {
+  answer_type: "document_explanation" | "specific_answer" | "abstention" | string;
+  document_overview?: string;
+  main_idea?: string;
+  steps?: string[];
+  key_points?: string[];
+  main_findings?: string[];
+  simple_explanation?: string;
+  direct_answer?: string;
+  evidence?: StructuredEvidenceItem[];
+}
+
 export interface SynthesisResponse {
   original_query: string;
+  doc_id?: string | null;
   status: SynthesisStatus;
   final_answer: string;
+  structured_answer?: StructuredAnswer;
   citations: CitationResponse[];
   synthesis_method: string;
   verification_verdict: string;
