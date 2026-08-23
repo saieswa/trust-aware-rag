@@ -1,14 +1,14 @@
 """
 TrustScoreLog — persisted record of one trust score computation.
 
-Every call to the trust scoring API writes one row here (see
-backend/app/services/trust_service.py). This is what the Trust Dashboard
-API aggregates over: average trust score, how often the system abstains,
-how often contradictions show up, etc. — the same statistics the
-project's design docs describe for a "Trust Dashboard" page.
+Every call to the trust scoring or evaluation API writes one row here.
+Preserves query, document association (doc_id, document_name), trust score,
+decision, feature breakdown, and timestamps.
 """
 
 from __future__ import annotations
+
+from typing import Optional
 
 from sqlalchemy import Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -21,9 +21,12 @@ class TrustScoreLog(Base, TimestampMixin):
     __tablename__ = "trust_score_logs"
 
     query: Mapped[str] = mapped_column(Text, nullable=False)
+    doc_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    document_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     trust_score: Mapped[float] = mapped_column(Float, nullable=False)
     decision: Mapped[str] = mapped_column(String(20), nullable=False)  # answer | retrieve_more | abstain
     scoring_method: Mapped[str] = mapped_column(String(20), nullable=False, default="formula")  # formula | ml
+    final_answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # ---------- Feature values (post-extraction, pre-weighting) ----------
     agreement_score: Mapped[float] = mapped_column(Float, nullable=False)
@@ -42,4 +45,4 @@ class TrustScoreLog(Base, TimestampMixin):
     labeling_method: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
 
     def __repr__(self) -> str:  # pragma: no cover
-        return f"<TrustScoreLog id={self.id} score={self.trust_score} decision={self.decision!r}>"
+        return f"<TrustScoreLog id={self.id} doc={self.doc_id!r} score={self.trust_score} decision={self.decision!r}>"

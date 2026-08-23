@@ -1,5 +1,5 @@
 """
-Pydantic schemas for the Trust Score API.
+Pydantic schemas for the Trust Score & Dashboard API.
 """
 
 from typing import Any, Dict, List, Literal, Optional
@@ -15,11 +15,11 @@ class TrustScoreRequest(BaseModel):
     doc_id: Optional[str] = Field(default=None, description="Active document ID to scope retrieval and trust scoring.")
     evidence: Optional[List[Dict[str, Any]]] = Field(
         default=None,
-        description="Pre-fetched evidence (e.g. from /agents/retriever/run). If omitted, runs the full Retriever + Critic pipeline first.",
+        description="Pre-fetched evidence. If omitted, runs the full Retriever + Critic pipeline first.",
     )
     method: ScoringMethodLiteral = Field(
         default="auto",
-        description="'formula' always uses the hand-built formula; 'ml' uses the trained XGBoost model (falls back to formula if untrained); 'auto' uses ML if available, formula otherwise.",
+        description="'formula' always uses the formula; 'ml' uses the trained XGBoost model; 'auto' uses ML if available.",
     )
 
 
@@ -35,18 +35,35 @@ class TrustReportResponse(BaseModel):
     doc_id: Optional[str] = None
     trust_score: float = Field(..., description="Final trust score, 0.0-1.0.")
     decision: str = Field(..., description="'answer', 'retrieve_more', or 'abstain'.")
-    scoring_method: str = Field(..., description="'formula' or 'ml' — whichever actually produced this score.")
-    # Dict[str, Any] rather than a fixed schema: the formula returns
-    # {value, weight, contribution} per feature, the ML model returns a
-    # single SHAP contribution value per feature — different shapes for a
-    # genuinely different (but analogous) kind of explanation.
+    scoring_method: str = Field(..., description="'formula' or 'ml'.")
     feature_breakdown: Dict[str, Any]
-    raw_features: Dict[str, float] = Field(..., description="The five raw trust features, always present regardless of scoring method.")
+    raw_features: Dict[str, float] = Field(..., description="The five raw trust features.")
     diagnostics: Dict[str, int]
     contradictions: List[Dict[str, Any]]
     contradiction_method: str
     labeling_method: str
     evidence: List[Dict[str, Any]]
+
+
+class EvaluationHistoryItem(BaseModel):
+    id: str
+    query: str
+    doc_id: Optional[str] = None
+    document_name: str
+    decision: str
+    trust_score: float
+    created_at: str
+    final_answer: Optional[str] = None
+
+
+class DocumentPerformanceItem(BaseModel):
+    doc_id: str
+    document_name: str
+    total_queries: int
+    average_trust_score: float
+    supported_count: int
+    needs_more_evidence_count: int
+    abstained_count: int
 
 
 class TrustDashboardResponse(BaseModel):
@@ -56,11 +73,13 @@ class TrustDashboardResponse(BaseModel):
     average_contradiction_score: float
     average_agreement_score: float
     llm_usage_rate: float = Field(..., description="Fraction of queries where the LLM (not heuristic fallback) was used.")
+    history: List[EvaluationHistoryItem] = Field(default_factory=list)
+    document_performance: List[DocumentPerformanceItem] = Field(default_factory=list)
 
 
 class TrainModelRequest(BaseModel):
-    n_samples: int = Field(default=4000, ge=200, le=50000, description="Number of synthetic training rows to generate (ignored if csv_path is set).")
-    csv_path: Optional[str] = Field(default=None, description="Path to a real labeled CSV dataset, if available. Falls back to synthetic data if omitted.")
+    n_samples: int = Field(default=4000, ge=200, le=50000)
+    csv_path: Optional[str] = None
 
 
 class TrainModelResponse(BaseModel):

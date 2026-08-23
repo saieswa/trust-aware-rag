@@ -1,5 +1,5 @@
 """
-Synthesis Service with Document Scoping, Redis Caching, and Structured Answers.
+Synthesis Service with Document Scoping, Redis Caching, and Evaluation Logging.
 """
 
 from typing import Any, Dict, Optional
@@ -10,6 +10,7 @@ from app.schemas.synthesis import CitationResponse, SentenceVerdictResponse, Str
 from app.services.cache_service import get_cache_service
 from agents.pipeline.agent import run_full_pipeline
 from agents.retriever.query_analyzer import classify_query_type
+from database.postgres.session import get_session_context
 from trust.trust_engine import compute_trust_report
 
 
@@ -96,6 +97,20 @@ class SynthesisService:
             abstained=report["abstained"],
             abstain_reason=report["abstain_reason"],
         )
+
+        # Persist to database log for historical dashboard evaluation
+        try:
+            from app.services.trust_service import get_trust_service
+            trust_svc = get_trust_service()
+            async with get_session_context() as db:
+                await trust_svc._persist(
+                    db,
+                    report=trust_report,
+                    doc_id=effective_doc_id,
+                    final_answer=report["final_answer"],
+                )
+        except Exception as log_err:
+            logger.warning(f"Non-fatal error logging synthesis evaluation to DB: {log_err}")
 
         if effective_doc_id:
             await cache_service.set_cached("synthesis", effective_doc_id, query, response.model_dump())

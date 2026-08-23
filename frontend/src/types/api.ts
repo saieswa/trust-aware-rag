@@ -49,6 +49,27 @@ export interface ScoredEvidence {
   quality_score: number;
 }
 
+export interface EvaluationHistoryItem {
+  id: string;
+  query: string;
+  doc_id?: string | null;
+  document_name: string;
+  decision: Decision | string;
+  trust_score: number;
+  created_at: string;
+  final_answer?: string | null;
+}
+
+export interface DocumentPerformanceItem {
+  doc_id: string;
+  document_name: string;
+  total_queries: number;
+  average_trust_score: number;
+  supported_count: number;
+  needs_more_evidence_count: number;
+  abstained_count: number;
+}
+
 export interface TrustDashboardResponse {
   total_queries: number;
   average_trust_score: number;
@@ -56,6 +77,8 @@ export interface TrustDashboardResponse {
   average_contradiction_score: number;
   average_agreement_score: number;
   llm_usage_rate: number;
+  history: EvaluationHistoryItem[];
+  document_performance: DocumentPerformanceItem[];
 }
 
 export interface CitationResponse {
